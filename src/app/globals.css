@@ -1,0 +1,228 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-bg-primary: #0a0a0a;
+  --color-bg-secondary: #111111;
+  --color-bg-tertiary: #1a1a1a;
+  --color-bg-card: #0d0d0d;
+  --color-accent: #00ff41;
+  --color-accent-dim: #00cc33;
+  --color-text-primary: #00ff41;
+  --color-text-secondary: #b0b0b0;
+  --color-text-dim: #666666;
+  --color-text-error: #ff4444;
+  --color-text-warning: #ffaa00;
+  --color-border-color: #1a1a2e;
+  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas",
+    monospace;
+}
+
+/* ===== Base ===== */
+body {
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+}
+
+/* ===== Scrollbar ===== */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-bg-secondary);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-color);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-dim);
+}
+
+/* ===== Scanline overlay ===== */
+.scanlines::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.03) 2px,
+    rgba(0, 0, 0, 0.03) 4px
+  );
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* ===== Animations ===== */
+@keyframes blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes matrix-flicker {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  92% {
+    opacity: 1;
+  }
+  93% {
+    opacity: 0.3;
+  }
+  94% {
+    opacity: 1;
+  }
+  96% {
+    opacity: 0.6;
+  }
+  97% {
+    opacity: 1;
+  }
+}
+
+.cursor-blink::after {
+  content: "▊";
+  animation: blink 1s step-end infinite;
+  color: var(--color-accent);
+}
+
+/* ===== Terminal card ===== */
+.terminal-card {
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border-color);
+  border-radius: 4px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.terminal-card:hover {
+  border-color: var(--color-accent-dim);
+  box-shadow: 0 0 15px rgba(0, 255, 65, 0.1);
+}
+.terminal-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--color-accent-dim),
+    transparent
+  );
+  opacity: 0.5;
+}
+
+/* ===== Progress bar ===== */
+.token-progress {
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-color);
+  border-radius: 2px;
+  overflow: hidden;
+  height: 8px;
+}
+.token-progress-fill {
+  background: linear-gradient(90deg, var(--color-accent-dim), var(--color-accent));
+  height: 100%;
+  transition: width 0.5s ease;
+  position: relative;
+}
+.token-progress-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.1) 50%,
+    transparent 100%
+  );
+  animation: shimmer 2s infinite;
+}
+
+/* ===== Markdown content ===== */
+.markdown-body {
+  color: var(--color-text-secondary);
+  line-height: 1.7;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3 {
+  color: var(--color-accent);
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+}
+.markdown-body h1::before {
+  content: "# ";
+  color: var(--color-text-dim);
+}
+.markdown-body h2::before {
+  content: "## ";
+  color: var(--color-text-dim);
+}
+.markdown-body h3::before {
+  content: "### ";
+  color: var(--color-text-dim);
+}
+.markdown-body code {
+  background: var(--color-bg-tertiary);
+  padding: 0.15em 0.4em;
+  border-radius: 3px;
+  font-size: 0.9em;
+  color: var(--color-accent);
+}
+.markdown-body pre {
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-color);
+  border-radius: 4px;
+  padding: 1rem;
+  overflow-x: auto;
+}
+.markdown-body blockquote {
+  border-left: 3px solid var(--color-accent-dim);
+  padding-left: 1rem;
+  color: var(--color-text-dim);
+  margin-left: 0;
+}
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.5rem;
+}
+.markdown-body li::marker {
+  color: var(--color-accent-dim);
+}
+
+/* ===== Matrix rain container ===== */
+.matrix-bg {
+  position: relative;
+  overflow: hidden;
+}
+.matrix-bg canvas {
+  opacity: 0.15;
+}
+
+/* ===== Utility: glow text ===== */
+.glow-text {
+  text-shadow: 0 0 10px rgba(0, 255, 65, 0.15), 0 0 20px rgba(0, 255, 65, 0.15);
+}

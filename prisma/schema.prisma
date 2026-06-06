@@ -1,0 +1,183 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id            String         @id @default(cuid())
+  email         String         @unique
+  username      String         @unique
+  passwordHash  String?
+  avatarUrl     String?
+  bio           String?
+  githubHandle  String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  projects      Project[]
+  contributions Contribution[]
+  apiKeys       ApiKey[]
+  wallet        TokenWallet?
+  comments      Comment[]
+  stars         Star[]
+  accounts      Account[]
+  sessions      Session[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Project {
+  id              String        @id @default(cuid())
+  title           String
+  summary         String        // Short one-liner
+  description     String        // Full Markdown description
+  categoryId      String
+  status          Status        @default(DRAFT)
+  tokenGoal       Int           // Total tokens needed
+  tokenRaised     Int           @default(0)
+  llmProvider     String        // "anthropic" | "openai" | "deepseek" | "qwen"
+  llmModel        String        // e.g. "claude-opus-4-8", "gpt-4o"
+  repoUrl         String?
+  deliverablesUrl String?
+  imageUrl        String?
+  creatorId       String
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  creator         User          @relation(fields: [creatorId], references: [id])
+  category        Category      @relation(fields: [categoryId], references: [id])
+  contributions   Contribution[]
+  deliverables    Deliverable[]
+  comments        Comment[]
+  stars           Star[]
+  usages          TokenUsage[]
+}
+
+model Contribution {
+  id          String   @id @default(cuid())
+  amount      Int      // Token amount contributed
+  projectId   String
+  userId      String
+  message     String?  // Optional message from contributor
+  createdAt   DateTime @default(now())
+  project     Project  @relation(fields: [projectId], references: [id])
+  user        User     @relation(fields: [userId], references: [id])
+}
+
+model TokenUsage {
+  id          String   @id @default(cuid())
+  projectId   String
+  amount      Int      // Tokens consumed
+  provider    String
+  model       String
+  purpose     String   // Description of what this call did
+  createdAt   DateTime @default(now())
+  project     Project  @relation(fields: [projectId], references: [id])
+}
+
+model ApiKey {
+  id           String   @id @default(cuid())
+  userId       String
+  provider     String   // "anthropic" | "openai" | "deepseek" | "qwen"
+  label        String   // User-given label
+  encryptedKey String   // AES-256-GCM encrypted
+  maskedKey    String   // Last 4 chars visible in UI
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id])
+}
+
+model TokenWallet {
+  id      String @id @default(cuid())
+  userId  String @unique
+  balance Int    @default(0)
+  user    User   @relation(fields: [userId], references: [id])
+}
+
+model Deliverable {
+  id           String   @id @default(cuid())
+  projectId    String
+  title        String
+  description  String?
+  fileUrl      String
+  fileSize     Int?
+  version      String   @default("1.0")
+  downloadCount Int     @default(0)
+  createdAt    DateTime @default(now())
+  project      Project  @relation(fields: [projectId], references: [id])
+}
+
+model Comment {
+  id        String    @id @default(cuid())
+  content   String
+  projectId String
+  userId    String
+  parentId  String?   // For nested replies (1 level)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  project   Project   @relation(fields: [projectId], references: [id])
+  user      User      @relation(fields: [userId], references: [id])
+  parent    Comment?  @relation("CommentReplies", fields: [parentId], references: [id])
+  replies   Comment[] @relation("CommentReplies")
+}
+
+model Star {
+  id        String   @id @default(cuid())
+  projectId String
+  userId    String
+  createdAt DateTime @default(now())
+  project   Project  @relation(fields: [projectId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([projectId, userId])
+}
+
+model Category {
+  id       String    @id @default(cuid())
+  nameEn   String
+  nameZh   String
+  slug     String    @unique
+  icon     String?   // Emoji or icon name
+  projects Project[]
+}
+
+enum Status {
+  DRAFT
+  FUNDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
