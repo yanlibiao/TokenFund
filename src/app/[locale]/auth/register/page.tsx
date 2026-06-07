@@ -3,10 +3,13 @@
 import { useState } from "react";
 import { useTranslations, useLocale } from "next-intl";
 import Link from "next/link";
+import { signIn } from "next-auth/react";
+import { useRouter } from "next/navigation";
 
 export default function RegisterPage() {
   const t = useTranslations("auth");
   const locale = useLocale();
+  const router = useRouter();
   const [form, setForm] = useState({
     username: "",
     email: "",
@@ -14,16 +17,76 @@ export default function RegisterPage() {
     confirmPassword: "",
   });
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError("");
+
     if (form.password !== form.confirmPassword) {
-      alert("Passwords do not match");
+      setError(
+        locale === "zh" ? "两次密码不一致" : "Passwords do not match"
+      );
       return;
     }
+
+    if (form.password.length < 8) {
+      setError(
+        locale === "zh"
+          ? "密码至少需要8个字符"
+          : "Password must be at least 8 characters"
+      );
+      return;
+    }
+
     setLoading(true);
-    // TODO: Implement registration
-    setLoading(false);
+
+    try {
+      const res = await fetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: form.username,
+          email: form.email,
+          password: form.password,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(
+          data.error ||
+            (locale === "zh" ? "注册失败" : "Registration failed")
+        );
+        setLoading(false);
+        return;
+      }
+
+      // Auto-login after successful registration
+      const signInResult = await signIn("credentials", {
+        email: form.email,
+        password: form.password,
+        redirect: false,
+      });
+
+      setLoading(false);
+
+      if (signInResult?.ok) {
+        router.push(`/${locale}/dashboard`);
+        router.refresh();
+      } else {
+        // Registration succeeded but auto-login failed — redirect to login
+        router.push(`/${locale}/auth/login`);
+      }
+    } catch (err) {
+      setLoading(false);
+      setError(locale === "zh" ? "网络错误，请重试" : "Network error, please retry");
+    }
+  };
+
+  const handleChange = (field: string, value: string) => {
+    setForm((prev) => ({ ...prev, [field]: value }));
   };
 
   return (
@@ -33,6 +96,12 @@ export default function RegisterPage() {
           &gt; {t("register")}
         </h1>
 
+        {error && (
+          <div className="border border-text-error text-text-error px-4 py-2 rounded text-sm mb-4 text-center">
+            {error}
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div>
             <label className="block text-xs text-text-dim mb-1">
@@ -41,10 +110,12 @@ export default function RegisterPage() {
             <input
               type="text"
               value={form.username}
-              onChange={(e) => setForm({ ...form, username: e.target.value })}
+              onChange={(e) => handleChange("username", e.target.value)}
               required
               className="w-full"
               placeholder="your-handle"
+              minLength={2}
+              maxLength={30}
             />
           </div>
           <div>
@@ -54,7 +125,7 @@ export default function RegisterPage() {
             <input
               type="email"
               value={form.email}
-              onChange={(e) => setForm({ ...form, email: e.target.value })}
+              onChange={(e) => handleChange("email", e.target.value)}
               required
               className="w-full"
               placeholder="you@example.com"
@@ -67,7 +138,7 @@ export default function RegisterPage() {
             <input
               type="password"
               value={form.password}
-              onChange={(e) => setForm({ ...form, password: e.target.value })}
+              onChange={(e) => handleChange("password", e.target.value)}
               required
               className="w-full"
               placeholder="••••••••"
@@ -81,9 +152,7 @@ export default function RegisterPage() {
             <input
               type="password"
               value={form.confirmPassword}
-              onChange={(e) =>
-                setForm({ ...form, confirmPassword: e.target.value })
-              }
+              onChange={(e) => handleChange("confirmPassword", e.target.value)}
               required
               className="w-full"
               placeholder="••••••••"
@@ -101,7 +170,10 @@ export default function RegisterPage() {
 
         <p className="text-center text-xs text-text-dim mt-6">
           {t("hasAccount")}{" "}
-          <Link href={`/${locale}/auth/login`} className="text-accent hover:underline">
+          <Link
+            href={`/${locale}/auth/login`}
+            className="text-accent hover:underline"
+          >
             {t("loginNow")}
           </Link>
         </p>
