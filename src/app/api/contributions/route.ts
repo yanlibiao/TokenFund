@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { auth } from "@/lib/auth";
 
 export async function POST(request: NextRequest) {
   try {
+    const session = await auth();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    }
+
     const body = await request.json();
     const { projectId, amount, message } = body;
 
@@ -13,7 +19,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verify project exists and is in FUNDING status
     const project = await prisma.project.findUnique({
       where: { id: projectId },
     });
@@ -29,10 +34,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // TODO: Get user from session
-    const userId = "demo";
+    const userId = session.user.id;
 
-    // Create contribution and update project in a transaction
     const [contribution] = await prisma.$transaction([
       prisma.contribution.create({
         data: {
@@ -44,18 +47,15 @@ export async function POST(request: NextRequest) {
       }),
       prisma.project.update({
         where: { id: projectId },
-        data: {
-          tokenRaised: { increment: parseInt(amount) },
-        },
+        data: { tokenRaised: { increment: parseInt(amount) } },
       }),
     ]);
 
-    // If goal reached, update status to IN_PROGRESS
-    const updatedProject = await prisma.project.findUnique({
+    const updated = await prisma.project.findUnique({
       where: { id: projectId },
     });
 
-    if (updatedProject && updatedProject.tokenRaised >= updatedProject.tokenGoal) {
+    if (updated && updated.tokenRaised >= updated.tokenGoal && updated.status === "FUNDING") {
       await prisma.project.update({
         where: { id: projectId },
         data: { status: "IN_PROGRESS" },

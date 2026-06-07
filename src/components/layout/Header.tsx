@@ -4,11 +4,13 @@ import Link from "next/link";
 import { useTranslations, useLocale } from "next-intl";
 import { useState } from "react";
 import { useSession, signOut } from "next-auth/react";
+import { useTheme } from "@/components/layout/ThemeProvider";
 
 export default function Header() {
   const t = useTranslations("nav");
   const locale = useLocale();
   const { data: session } = useSession();
+  const { theme, toggle: toggleTheme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
 
@@ -51,6 +53,14 @@ export default function Header() {
               {t("dashboard")}
             </Link>
           )}
+
+          <button
+            onClick={toggleTheme}
+            className="theme-toggle"
+            aria-label="Toggle theme"
+          >
+            {theme === "dark" ? "☀" : "🌙"}
+          </button>
 
           <Link
             href={`/${otherLocale}`}
@@ -178,7 +188,10 @@ export default function Header() {
             </>
           )}
 
-          <div className="pt-2 border-t border-border-color">
+          <div className="pt-2 border-t border-border-color flex items-center justify-between">
+            <button onClick={toggleTheme} className="theme-toggle">
+              {theme === "dark" ? "☀ " + (locale === "zh" ? "浅色" : "Light") : "🌙 " + (locale === "zh" ? "深色" : "Dark")}
+            </button>
             <Link
               href={`/${otherLocale}`}
               className="text-text-dim hover:text-accent text-xs hover:no-underline"

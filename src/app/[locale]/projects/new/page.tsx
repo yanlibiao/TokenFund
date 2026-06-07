@@ -1,15 +1,20 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useTranslations, useLocale } from "next-intl";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { LLM_PROVIDERS, type LLMProvider } from "@/lib/token-utils";
+
+type Category = { id: string; nameEn: string; nameZh: string; slug: string; icon: string | null };
 
 export default function NewProjectPage() {
   const t = useTranslations("project");
   const locale = useLocale();
   const router = useRouter();
+  const { data: session } = useSession();
 
+  const [categories, setCategories] = useState<Category[]>([]);
   const [form, setForm] = useState({
     title: "",
     summary: "",
@@ -23,19 +28,25 @@ export default function NewProjectPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // Fetch categories
-  const [categories, setCategories] = useState<
-    Array<{ id: string; nameEn: string; nameZh: string; slug: string }>
-  >([]);
-
-  useState(() => {
-    fetch("/api/projects")
+  // Fetch categories on mount
+  useEffect(() => {
+    fetch("/api/categories")
       .then((r) => r.json())
-      .then((data) => {
-        // We need a separate categories API, but for now seed from the homepage
+      .then((data: Category[]) => {
+        setCategories(data);
+        if (data.length > 0 && !form.categoryId) {
+          setForm((f) => ({ ...f, categoryId: data[0].id }));
+        }
       })
       .catch(() => {});
-  });
+  }, []);
+
+  // Redirect if not logged in
+  useEffect(() => {
+    if (session === null) {
+      router.push(`/${locale}/auth/login`);
+    }
+  }, [session, locale, router]);
 
   const selectedProvider = LLM_PROVIDERS[form.llmProvider];
 
@@ -54,18 +65,22 @@ export default function NewProjectPage() {
         }),
       });
 
+      const data = await res.json();
+
       if (!res.ok) {
-        const data = await res.json();
         throw new Error(data.error || "Failed to create project");
       }
 
-      const project = await res.json();
-      router.push(`/${locale}/projects/${project.id}`);
+      router.push(`/${locale}/projects/${data.id}`);
     } catch (err: any) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
+  };
+
+  const update = (field: string, value: string) => {
+    setForm((prev) => ({ ...prev, [field]: value }));
   };
 
   return (
@@ -85,12 +100,12 @@ export default function NewProjectPage() {
         {/* Title */}
         <div>
           <label className="block text-sm text-text-primary mb-1">
-            {t("title")}
+            {t("title")} <span className="text-text-error">*</span>
           </label>
           <input
             type="text"
             value={form.title}
-            onChange={(e) => setForm({ ...form, title: e.target.value })}
+            onChange={(e) => update("title", e.target.value)}
             required
             className="w-full"
             placeholder="My awesome AI project"
@@ -100,28 +115,28 @@ export default function NewProjectPage() {
         {/* Summary */}
         <div>
           <label className="block text-sm text-text-primary mb-1">
-            {t("summary")}
+            {t("summary")} <span className="text-text-error">*</span>
           </label>
           <input
             type="text"
             value={form.summary}
-            onChange={(e) => setForm({ ...form, summary: e.target.value })}
+            onChange={(e) => update("summary", e.target.value)}
             required
             className="w-full"
             placeholder={t("summaryPlaceholder")}
           />
         </div>
 
-        {/* Description (Markdown) */}
+        {/* Description */}
         <div>
           <label className="block text-sm text-text-primary mb-1">
-            {t("description")} <span className="text-text-dim">(Markdown)</span>
+            {t("description")}{" "}
+            <span className="text-text-dim">(Markdown)</span>
+            <span className="text-text-error"> *</span>
           </label>
           <textarea
             value={form.description}
-            onChange={(e) =>
-              setForm({ ...form, description: e.target.value })
-            }
+            onChange={(e) => update("description", e.target.value)}
             required
             className="w-full min-h-[200px]"
             placeholder={t("descriptionPlaceholder")}
@@ -131,12 +146,12 @@ export default function NewProjectPage() {
         {/* Token Goal */}
         <div>
           <label className="block text-sm text-text-primary mb-1">
-            {t("tokenGoal")}
+            {t("tokenGoal")} <span className="text-text-error">*</span>
           </label>
           <input
             type="number"
             value={form.tokenGoal}
-            onChange={(e) => setForm({ ...form, tokenGoal: e.target.value })}
+            onChange={(e) => update("tokenGoal", e.target.value)}
             required
             min="1000"
             className="w-full"
@@ -145,11 +160,33 @@ export default function NewProjectPage() {
           <p className="text-xs text-text-dim mt-1">{t("tokenGoalHelp")}</p>
         </div>
 
+        {/* Category */}
+        <div>
+          <label className="block text-sm text-text-primary mb-1">
+            {t("category")} <span className="text-text-error">*</span>
+          </label>
+          <select
+            value={form.categoryId}
+            onChange={(e) => update("categoryId", e.target.value)}
+            required
+            className="w-full"
+          >
+            {categories.length === 0 && (
+              <option value="">Loading...</option>
+            )}
+            {categories.map((cat) => (
+              <option key={cat.id} value={cat.id}>
+                {cat.icon} {locale === "zh" ? cat.nameZh : cat.nameEn}
+              </option>
+            ))}
+          </select>
+        </div>
+
         {/* LLM Provider & Model */}
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="block text-sm text-text-primary mb-1">
-              {t("llmProvider")}
+              {t("llmProvider")} <span className="text-text-error">*</span>
             </label>
             <select
               value={form.llmProvider}
@@ -161,7 +198,7 @@ export default function NewProjectPage() {
                   llmModel: LLM_PROVIDERS[provider].defaultModel,
                 });
               }}
-              className="w-full bg-bg-secondary border border-border-color text-text-primary rounded px-3 py-2 text-sm"
+              className="w-full"
             >
               {(Object.keys(LLM_PROVIDERS) as LLMProvider[]).map((key) => (
                 <option key={key} value={key}>
@@ -172,12 +209,12 @@ export default function NewProjectPage() {
           </div>
           <div>
             <label className="block text-sm text-text-primary mb-1">
-              {t("llmModel")}
+              {t("llmModel")} <span className="text-text-error">*</span>
             </label>
             <select
               value={form.llmModel}
-              onChange={(e) => setForm({ ...form, llmModel: e.target.value })}
-              className="w-full bg-bg-secondary border border-border-color text-text-primary rounded px-3 py-2 text-sm"
+              onChange={(e) => update("llmModel", e.target.value)}
+              className="w-full"
             >
               {selectedProvider.models.map((model) => (
                 <option key={model} value={model}>
@@ -196,7 +233,7 @@ export default function NewProjectPage() {
           <input
             type="url"
             value={form.repoUrl}
-            onChange={(e) => setForm({ ...form, repoUrl: e.target.value })}
+            onChange={(e) => update("repoUrl", e.target.value)}
             className="w-full"
             placeholder="https://github.com/username/repo"
           />
@@ -210,6 +247,13 @@ export default function NewProjectPage() {
             className="btn btn-primary flex-1"
           >
             {loading ? "..." : t("create")}
+          </button>
+          <button
+            type="button"
+            onClick={() => router.back()}
+            className="btn btn-ghost"
+          >
+            {locale === "zh" ? "取消" : "Cancel"}
           </button>
         </div>
       </form>

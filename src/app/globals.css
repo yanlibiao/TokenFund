@@ -1,228 +1,225 @@
 @import "tailwindcss";
 
+/* ===== Default: Dark Terminal Theme ===== */
+:root {
+  --bg-primary: #0a0a0a;
+  --bg-secondary: #111111;
+  --bg-tertiary: #1a1a1a;
+  --bg-card: #0d0d0d;
+  --accent: #00ff41;
+  --accent-dim: #00cc33;
+  --accent-glow: rgba(0, 255, 65, 0.15);
+  --text-primary: #00ff41;
+  --text-secondary: #b0b0b0;
+  --text-dim: #666666;
+  --text-error: #ff4444;
+  --text-warning: #ffaa00;
+  --border-color: #1a1a2e;
+  --card-hover-glow: rgba(0, 255, 65, 0.1);
+  --btn-primary-text: #0a0a0a;
+  --input-bg: #111111;
+  --font-body: "JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas", monospace;
+  --rain-opacity: 0.15;
+}
+
+/* ===== Light Theme (white + blue) ===== */
+[data-theme="light"] {
+  --bg-primary: #f8fafc;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f1f5f9;
+  --bg-card: #ffffff;
+  --accent: #3b82f6;
+  --accent-dim: #2563eb;
+  --accent-glow: rgba(59, 130, 246, 0.15);
+  --text-primary: #1e40af;
+  --text-secondary: #475569;
+  --text-dim: #94a3b8;
+  --text-error: #dc2626;
+  --text-warning: #d97706;
+  --border-color: #e2e8f0;
+  --card-hover-glow: rgba(59, 130, 246, 0.08);
+  --btn-primary-text: #ffffff;
+  --input-bg: #f1f5f9;
+  --font-body: "Inter", "Noto Sans SC", system-ui, sans-serif;
+  --rain-opacity: 0.04;
+}
+
 @theme inline {
-  --color-bg-primary: #0a0a0a;
-  --color-bg-secondary: #111111;
-  --color-bg-tertiary: #1a1a1a;
-  --color-bg-card: #0d0d0d;
-  --color-accent: #00ff41;
-  --color-accent-dim: #00cc33;
-  --color-text-primary: #00ff41;
-  --color-text-secondary: #b0b0b0;
-  --color-text-dim: #666666;
-  --color-text-error: #ff4444;
-  --color-text-warning: #ffaa00;
-  --color-border-color: #1a1a2e;
-  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas",
-    monospace;
+  --color-bg-primary: var(--bg-primary);
+  --color-bg-secondary: var(--bg-secondary);
+  --color-bg-tertiary: var(--bg-tertiary);
+  --color-bg-card: var(--bg-card);
+  --color-accent: var(--accent);
+  --color-accent-dim: var(--accent-dim);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-dim: var(--text-dim);
+  --color-text-error: var(--text-error);
+  --color-text-warning: var(--text-warning);
+  --color-border-color: var(--border-color);
+  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas", monospace;
 }
 
 /* ===== Base ===== */
 body {
-  background-color: var(--color-bg-primary);
-  color: var(--color-text-secondary);
-  font-family: var(--font-mono);
+  background-color: var(--bg-primary);
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  transition: background-color 0.3s, color 0.3s;
 }
 
 /* ===== Scrollbar ===== */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-::-webkit-scrollbar-track {
-  background: var(--color-bg-secondary);
-}
-::-webkit-scrollbar-thumb {
-  background: var(--color-border-color);
-  border-radius: 4px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-dim);
-}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--bg-secondary); }
+::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 
-/* ===== Scanline overlay ===== */
+/* ===== Scanline overlay (dark only) ===== */
 .scanlines::after {
   content: "";
-  position: absolute;
-  inset: 0;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(0, 0, 0, 0.03) 2px,
-    rgba(0, 0, 0, 0.03) 4px
-  );
-  pointer-events: none;
-  z-index: 10;
+  position: absolute; inset: 0;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
+  pointer-events: none; z-index: 10;
 }
+[data-theme="light"] .scanlines::after { display: none; }
 
 /* ===== Animations ===== */
-@keyframes blink {
-  0%,
-  50% {
-    opacity: 1;
-  }
-  51%,
-  100% {
-    opacity: 0;
-  }
-}
-
-@keyframes shimmer {
-  0% {
-    transform: translateX(-100%);
-  }
-  100% {
-    transform: translateX(100%);
-  }
-}
-
-@keyframes matrix-flicker {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  92% {
-    opacity: 1;
-  }
-  93% {
-    opacity: 0.3;
-  }
-  94% {
-    opacity: 1;
-  }
-  96% {
-    opacity: 0.6;
-  }
-  97% {
-    opacity: 1;
-  }
-}
+@keyframes blink { 0%,50%{opacity:1} 51%,100%{opacity:0} }
+@keyframes shimmer { 0%{transform:translateX(-100%)} 100%{transform:translateX(100%)} }
 
 .cursor-blink::after {
   content: "▊";
   animation: blink 1s step-end infinite;
-  color: var(--color-accent);
+  color: var(--accent);
 }
 
-/* ===== Terminal card ===== */
+/* ===== Card ===== */
 .terminal-card {
-  background: var(--color-bg-card);
-  border: 1px solid var(--color-border-color);
-  border-radius: 4px;
-  position: relative;
-  overflow: hidden;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  position: relative; overflow: hidden;
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.3s;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
 }
 .terminal-card:hover {
-  border-color: var(--color-accent-dim);
-  box-shadow: 0 0 15px rgba(0, 255, 65, 0.1);
+  border-color: var(--accent-dim);
+  box-shadow: 0 0 15px var(--card-hover-glow);
 }
 .terminal-card::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    var(--color-accent-dim),
-    transparent
-  );
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent-dim), transparent);
   opacity: 0.5;
 }
 
+/* ===== Buttons ===== */
+.btn {
+  font-family: var(--font-body);
+  padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer;
+  transition: all 0.2s; border: 1px solid transparent; font-size: 0.875rem;
+  font-weight: 500; display: inline-block; text-align: center;
+}
+.btn-primary {
+  background: var(--accent); color: var(--btn-primary-text); border-color: var(--accent);
+}
+.btn-primary:hover {
+  background: var(--accent-dim);
+  box-shadow: 0 0 15px var(--accent-glow);
+}
+.btn-secondary {
+  background: transparent; color: var(--accent); border-color: var(--accent);
+}
+.btn-secondary:hover {
+  background: var(--accent-glow);
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+.btn-ghost {
+  background: transparent; color: var(--text-secondary); border-color: var(--border-color);
+}
+.btn-ghost:hover { border-color: var(--accent-dim); color: var(--text-primary); }
+.btn-danger {
+  background: transparent; color: var(--text-error); border-color: var(--text-error);
+}
+.btn-danger:hover { background: rgba(255,68,68,0.1); }
+
+/* ===== Form inputs ===== */
+input, textarea, select {
+  background: var(--input-bg);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  padding: 0.6rem 0.75rem; border-radius: 6px;
+  outline: none; transition: border-color 0.2s, box-shadow 0.2s, background 0.3s;
+}
+input:focus, textarea:focus, select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+input::placeholder, textarea::placeholder { color: var(--text-dim); }
+
+/* ===== Links ===== */
+a { color: var(--accent); text-decoration: none; transition: color 0.2s; }
+a:hover { color: var(--accent-dim); text-decoration: underline; }
+
 /* ===== Progress bar ===== */
 .token-progress {
-  background: var(--color-bg-tertiary);
-  border: 1px solid var(--color-border-color);
-  border-radius: 2px;
-  overflow: hidden;
-  height: 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px; overflow: hidden; height: 10px;
 }
 .token-progress-fill {
-  background: linear-gradient(90deg, var(--color-accent-dim), var(--color-accent));
-  height: 100%;
-  transition: width 0.5s ease;
-  position: relative;
+  background: linear-gradient(90deg, var(--accent-dim), var(--accent));
+  height: 100%; transition: width 0.5s ease; position: relative;
+  border-radius: 4px;
 }
 .token-progress-fill::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(255, 255, 255, 0.1) 50%,
-    transparent 100%
-  );
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.15) 50%, transparent 100%);
   animation: shimmer 2s infinite;
 }
 
+/* ===== Status badges ===== */
+.status-draft { color: var(--text-dim); border-color: var(--text-dim); }
+.status-funding { color: var(--text-warning); border-color: var(--text-warning); }
+.status-in_progress, .status-IN_PROGRESS { color: #3b82f6; border-color: #3b82f6; }
+.status-completed, .status-COMPLETED { color: var(--accent); border-color: var(--accent); }
+.status-cancelled, .status-CANCELLED { color: var(--text-error); border-color: var(--text-error); }
+
 /* ===== Markdown content ===== */
-.markdown-body {
-  color: var(--color-text-secondary);
-  line-height: 1.7;
+.markdown-body { color: var(--text-secondary); line-height: 1.7; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  color: var(--accent); margin-top: 1.5em; margin-bottom: 0.5em;
 }
-.markdown-body h1,
-.markdown-body h2,
-.markdown-body h3 {
-  color: var(--color-accent);
-  margin-top: 1.5em;
-  margin-bottom: 0.5em;
-}
-.markdown-body h1::before {
-  content: "# ";
-  color: var(--color-text-dim);
-}
-.markdown-body h2::before {
-  content: "## ";
-  color: var(--color-text-dim);
-}
-.markdown-body h3::before {
-  content: "### ";
-  color: var(--color-text-dim);
-}
+.markdown-body h1::before { content: "# "; color: var(--text-dim); }
+.markdown-body h2::before { content: "## "; color: var(--text-dim); }
+.markdown-body h3::before { content: "### "; color: var(--text-dim); }
 .markdown-body code {
-  background: var(--color-bg-tertiary);
-  padding: 0.15em 0.4em;
-  border-radius: 3px;
-  font-size: 0.9em;
-  color: var(--color-accent);
+  background: var(--bg-tertiary); padding: 0.15em 0.4em; border-radius: 3px;
+  font-size: 0.9em; color: var(--accent);
 }
 .markdown-body pre {
-  background: var(--color-bg-tertiary);
-  border: 1px solid var(--color-border-color);
-  border-radius: 4px;
-  padding: 1rem;
-  overflow-x: auto;
+  background: var(--bg-tertiary); border: 1px solid var(--border-color);
+  border-radius: 6px; padding: 1rem; overflow-x: auto;
 }
 .markdown-body blockquote {
-  border-left: 3px solid var(--color-accent-dim);
-  padding-left: 1rem;
-  color: var(--color-text-dim);
-  margin-left: 0;
+  border-left: 3px solid var(--accent-dim); padding-left: 1rem;
+  color: var(--text-dim); margin-left: 0;
 }
-.markdown-body ul,
-.markdown-body ol {
-  padding-left: 1.5rem;
-}
-.markdown-body li::marker {
-  color: var(--color-accent-dim);
-}
+.markdown-body ul, .markdown-body ol { padding-left: 1.5rem; }
+.markdown-body li::marker { color: var(--accent-dim); }
 
-/* ===== Matrix rain container ===== */
-.matrix-bg {
-  position: relative;
-  overflow: hidden;
-}
-.matrix-bg canvas {
-  opacity: 0.15;
-}
+/* ===== Matrix rain ===== */
+.matrix-bg { position: relative; overflow: hidden; }
+.matrix-bg canvas { opacity: var(--rain-opacity); }
 
-/* ===== Utility: glow text ===== */
-.glow-text {
-  text-shadow: 0 0 10px rgba(0, 255, 65, 0.15), 0 0 20px rgba(0, 255, 65, 0.15);
+/* ===== Glow text ===== */
+.glow-text { text-shadow: 0 0 10px var(--accent-glow), 0 0 20px var(--accent-glow); }
+
+/* ===== Theme toggle button ===== */
+.theme-toggle {
+  background: var(--bg-tertiary); border: 1px solid var(--border-color);
+  color: var(--text-secondary); cursor: pointer;
+  padding: 4px 8px; border-radius: 6px; font-size: 0.875rem;
+  transition: all 0.2s;
 }
+.theme-toggle:hover { border-color: var(--accent-dim); color: var(--accent); }

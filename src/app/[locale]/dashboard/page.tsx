@@ -1,7 +1,10 @@
 import { getTranslations } from "next-intl/server";
+import { auth } from "@/lib/auth";
+import { redirect } from "next/navigation";
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { formatTokenCount } from "@/lib/token-utils";
+import ApiKeysSection from "./ApiKeysSection";
 
 export default async function DashboardPage({
   params,
@@ -11,8 +14,12 @@ export default async function DashboardPage({
   const { locale } = await params;
   const t = await getTranslations({ locale, namespace: "dashboard" });
 
-  // TODO: Get real user from session
-  const userId = "demo";
+  const session = await auth();
+  if (!session?.user?.id) {
+    redirect(`/${locale}/auth/login`);
+  }
+
+  const userId = session.user.id;
 
   const [myProjects, myContributions, apiKeys] = await Promise.all([
     prisma.project.findMany({
@@ -42,20 +49,15 @@ export default async function DashboardPage({
     }),
   ]);
 
-  const totalContributed = myContributions.reduce(
-    (sum, c) => sum + c.amount,
-    0
-  );
-  const totalReceived = myProjects.reduce(
-    (sum, p) => sum + p.tokenRaised,
-    0
-  );
+  const totalContributed = myContributions.reduce((sum, c) => sum + c.amount, 0);
+  const totalReceived = myProjects.reduce((sum, p) => sum + p.tokenRaised, 0);
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
       <h1 className="text-xl font-bold text-text-primary mb-8">
         <span className="text-text-dim">&gt; </span>
-        {t("title")}
+        {session.user.name || session.user.username}{" "}
+        <span className="text-text-dim text-sm">({t("title")})</span>
       </h1>
 
       {/* Stats */}
@@ -70,9 +72,7 @@ export default async function DashboardPage({
           <p className="text-2xl font-bold text-accent">
             {formatTokenCount(totalContributed)}
           </p>
-          <p className="text-xs text-text-dim mt-1">
-            {t("totalContributed")}
-          </p>
+          <p className="text-xs text-text-dim mt-1">{t("totalContributed")}</p>
         </div>
         <div className="terminal-card p-4 text-center">
           <p className="text-2xl font-bold text-accent">
@@ -134,46 +134,11 @@ export default async function DashboardPage({
         )}
       </div>
 
-      {/* API Keys */}
-      <div className="terminal-card p-6 mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-sm font-semibold text-text-primary">
-            <span className="text-text-dim">## </span>
-            {t("myApiKeys")}
-          </h2>
-          <button className="btn btn-secondary text-xs">
-            + {t("addApiKey")}
-          </button>
-        </div>
-        {apiKeys.length > 0 ? (
-          <div className="space-y-2">
-            {apiKeys.map((key) => (
-              <div
-                key={key.id}
-                className="flex items-center justify-between p-3 border border-border-color rounded text-sm"
-              >
-                <div className="flex items-center gap-3">
-                  <span className="text-text-primary">{key.label}</span>
-                  <span className="text-text-dim text-xs">
-                    {key.provider} · {key.maskedKey}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`text-xs ${key.isActive ? "text-accent" : "text-text-dim"}`}
-                  >
-                    {key.isActive ? t("active") : t("inactive")}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="text-text-dim text-sm text-center py-4">
-            No API keys yet. Add one to start contributing tokens.
-          </p>
-        )}
-      </div>
+      {/* API Keys — interactive client component */}
+      <ApiKeysSection
+        locale={locale}
+        initialKeys={apiKeys}
+      />
 
       {/* Contribution History */}
       <div className="terminal-card p-6">

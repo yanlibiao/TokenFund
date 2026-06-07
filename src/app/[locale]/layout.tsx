@@ -5,6 +5,7 @@ import { routing } from "@/i18n/routing";
 import Header from "@/components/layout/Header";
 import Footer from "@/components/layout/Footer";
 import AuthProvider from "@/components/layout/AuthProvider";
+import ThemeProvider from "@/components/layout/ThemeProvider";
 
 export default async function LocaleLayout({
   children,
@@ -23,11 +24,13 @@ export default async function LocaleLayout({
 
   return (
     <NextIntlClientProvider messages={messages} locale={locale}>
-      <AuthProvider>
-        <Header />
-        <main className="flex-1">{children}</main>
-        <Footer />
-      </AuthProvider>
+      <ThemeProvider>
+        <AuthProvider>
+          <Header />
+          <main className="flex-1">{children}</main>
+          <Footer />
+        </AuthProvider>
+      </ThemeProvider>
     </NextIntlClientProvider>
   );
 }

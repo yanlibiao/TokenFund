@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { auth } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -59,6 +60,11 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    const session = await auth();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    }
+
     const body = await request.json();
     const { title, summary, description, tokenGoal, llmProvider, llmModel, categoryId, repoUrl } = body;
 
@@ -83,7 +89,7 @@ export async function POST(request: NextRequest) {
         categoryId,
         repoUrl: repoUrl || null,
         status: "FUNDING",
-        creatorId: "demo", // TODO: Replace with actual user ID from auth session
+        creatorId: session.user.id,
       },
       include: {
         category: true,
