@@ -193,12 +193,11 @@ async function main() {
     ["research", "学术研究", null],
     ["other", "其他", null],
   ];
-
   for (const entry of categories) {
     const slug = entry[0] as string;
     const nameZh = entry[1] as string;
     const icon = entry[2] as string | null;
-    const nameEn = slug.split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+    const nameEn = slug.split("-")...
     await client.execute({
       sql: "INSERT OR IGNORE INTO Category (id, nameEn, nameZh, slug, icon) VALUES (?, ?, ?, ?, ?)",
       args: [slug, nameEn, nameZh, slug, icon],
