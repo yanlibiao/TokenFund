@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useTranslations } from "next-intl";
 import Link from "next/link";
 import { formatTokenCount } from "@/lib/token-utils";
+import AgentSandbox from "@/components/projects/AgentSandbox";
 
 type ProjectData = any;
 
@@ -75,7 +76,7 @@ export default function ProjectDetailClient({
             </Link>
           </p>
         </div>
-        {project.status === "FUNDING" && (
+        {(project.status === "FUNDING" || project.status === "IN_PROGRESS") && (
           <button
             onClick={() => setContributeOpen(true)}
             className="btn btn-primary"
@@ -130,6 +131,24 @@ export default function ProjectDetailClient({
               </pre>
             </div>
           </div>
+
+          {/* Agent Sandbox — only when funded */}
+          {(project.status === "IN_PROGRESS" ||
+            project.status === "COMPLETED") && (
+            <div>
+              <h2 className="text-sm font-semibold text-text-primary mb-4">
+                <span className="text-text-dim">## </span>
+                {locale === "zh" ? "AI Agent 沙盒" : "AI Agent Sandbox"}
+              </h2>
+              <AgentSandbox
+                projectId={project.id}
+                provider={project.llmProvider}
+                model={project.llmModel}
+                tokenRaised={project.tokenRaised}
+                locale={locale}
+              />
+            </div>
+          )}
 
           {/* Deliverables */}
           <div className="terminal-card p-6">

@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
 
-    if (project.status !== "FUNDING") {
+    if (project.status !== "FUNDING" && project.status !== "IN_PROGRESS") {
       return NextResponse.json(
         { error: "Project is not accepting contributions" },
         { status: 400 }
