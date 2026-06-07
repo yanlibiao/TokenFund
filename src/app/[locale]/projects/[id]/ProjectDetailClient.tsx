@@ -132,23 +132,22 @@ export default function ProjectDetailClient({
             </div>
           </div>
 
-          {/* Agent Sandbox — only when funded */}
-          {(project.status === "IN_PROGRESS" ||
-            project.status === "COMPLETED") && (
-            <div>
-              <h2 className="text-sm font-semibold text-text-primary mb-4">
-                <span className="text-text-dim">## </span>
-                {locale === "zh" ? "AI Agent 沙盒" : "AI Agent Sandbox"}
-              </h2>
-              <AgentSandbox
-                projectId={project.id}
-                provider={project.llmProvider}
-                model={project.llmModel}
-                tokenRaised={project.tokenRaised}
-                locale={locale}
-              />
-            </div>
-          )}
+          {/* Agent Sandbox — always visible */}
+          <div>
+            <h2 className="text-sm font-semibold text-text-primary mb-4">
+              <span className="text-text-dim">## </span>
+              {locale === "zh" ? "AI Agent 沙盒" : "AI Agent Sandbox"}
+            </h2>
+            <AgentSandbox
+              projectId={project.id}
+              provider={project.llmProvider}
+              model={project.llmModel}
+              tokenRaised={project.tokenRaised}
+              tokenGoal={project.tokenGoal}
+              projectStatus={project.status}
+              locale={locale}
+            />
+          </div>
 
           {/* Deliverables */}
           <div className="terminal-card p-6">

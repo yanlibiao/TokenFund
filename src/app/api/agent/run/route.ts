@@ -1,17 +1,7 @@
-// LLM Agent Proxy — routes calls to real LLM APIs using pooled project tokens
+// AI Agent endpoint — real LLM calls + smart simulation
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { decrypt } from "@/lib/encryption";
-
-// Approximate token counts for different providers
-function estimateInputTokens(text: string): number {
-  // Rough: ~4 chars per token for English, ~2 for Chinese
-  let total = 0;
-  for (const ch of text) {
-    total += /[\x00-\x7F]/.test(ch) ? 0.25 : 0.5;
-  }
-  return Math.ceil(total);
-}
 
 const PROVIDER_URLS: Record<string, string> = {
   anthropic: "https://api.anthropic.com/v1/messages",
@@ -20,201 +10,598 @@ const PROVIDER_URLS: Record<string, string> = {
   qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
 };
 
-async function callLLM(
-  provider: string,
-  model: string,
-  message: string,
-  apiKey: string
-): Promise<{ text: string; tokensUsed: number }> {
+function estimateTokens(text: string): number {
+  let t = 0;
+  for (const ch of text) t += /[\x00-\x7F]/.test(ch) ? 0.25 : 0.5;
+  return Math.ceil(t);
+}
+
+async function callRealLLM(provider: string, model: string, message: string, apiKey: string) {
   const url = PROVIDER_URLS[provider];
   if (!url) throw new Error(`Unknown provider: ${provider}`);
 
-  const inputTokens = estimateInputTokens(message);
-
-  let body: any;
-  let headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-
   if (provider === "anthropic") {
-    headers["x-api-key"] = apiKey;
-    headers["anthropic-version"] = "2023-06-01";
-    body = {
-      model,
-      max_tokens: 4096,
-      messages: [{ role: "user", content: message }],
-    };
     const res = await fetch(url, {
       method: "POST",
-      headers,
-      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({ model, max_tokens: 4096, messages: [{ role: "user", content: message }] }),
     });
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Anthropic API error: ${res.status} ${err}`);
-    }
-    const data = await res.json();
-    const outputText = data.content?.[0]?.text || "";
-    const outputTokens = data.usage?.output_tokens || estimateInputTokens(outputText);
-    return { text: outputText, tokensUsed: inputTokens + outputTokens };
+    if (!res.ok) throw new Error(`API ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const d = await res.json();
+    return { text: d.content?.[0]?.text || "", tokens: (d.usage?.input_tokens || 0) + (d.usage?.output_tokens || 0) };
   }
 
-  if (provider === "qwen") {
-    // Qwen uses compatible mode with OpenAI format
-    body = {
-      model,
-      messages: [{ role: "user", content: message }],
-      max_tokens: 4096,
-    };
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        ...headers,
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Qwen API error: ${res.status} ${err}`);
-    }
-    const data = await res.json();
-    const outputText = data.choices?.[0]?.message?.content || "";
-    const outputTokens = data.usage?.completion_tokens || estimateInputTokens(outputText);
-    const realInputTokens = data.usage?.prompt_tokens || inputTokens;
-    return { text: outputText, tokensUsed: realInputTokens + outputTokens };
-  }
-
-  // OpenAI & DeepSeek (both use OpenAI-compatible format)
-  body = {
-    model,
-    messages: [{ role: "user", content: message }],
-    max_tokens: 4096,
-  };
-  headers["Authorization"] = `Bearer ${apiKey}`;
   const res = await fetch(url, {
     method: "POST",
-    headers,
-    body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ model, messages: [{ role: "user", content: message }], max_tokens: 4096 }),
   });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`${provider} API error: ${res.status} ${err}`);
+  if (!res.ok) throw new Error(`API ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const d = await res.json();
+  return { text: d.choices?.[0]?.message?.content || "", tokens: (d.usage?.prompt_tokens || 0) + (d.usage?.completion_tokens || 0) };
+}
+
+// Smart simulation that actually generates useful content based on user prompt
+function runSimulation(prompt: string): { text: string; tokens: number } {
+  const isZH = /[一-鿿]/.test(prompt);
+  const lower = prompt.toLowerCase();
+
+  // Detect what the user wants
+  const wantsCode =
+    lower.includes("code") || lower.includes("代码") || lower.includes("function") || lower.includes("函数") ||
+    lower.includes("script") || lower.includes("component") || lower.includes("组件") || lower.includes("python") ||
+    lower.includes("react") || lower.includes("javascript") || lower.includes("写一个") || lower.includes("write a");
+
+  const wantsDoc =
+    lower.includes("word") || lower.includes("文档") || lower.includes("doc") || lower.includes("报告") ||
+    lower.includes("report") || lower.includes("计划书") || lower.includes("proposal") || lower.includes("方案") ||
+    lower.includes("计划") || lower.includes("plan") || lower.includes("document") || lower.includes("合同") ||
+    lower.includes("合同") || lower.includes("contract");
+
+  const wantsAnalysis =
+    lower.includes("分析") || lower.includes("analysis") || lower.includes("数据") || lower.includes("data") ||
+    lower.includes("比较") || lower.includes("compare");
+
+  let output = "";
+  let tokens = 0;
+
+  if (wantsCode) {
+    output = generateCodeResponse(prompt, isZH);
+    tokens = estimateTokens(output);
+  } else if (wantsDoc) {
+    output = generateDocumentResponse(prompt, isZH);
+    tokens = estimateTokens(output);
+  } else if (wantsAnalysis) {
+    output = generateAnalysisResponse(prompt, isZH);
+    tokens = estimateTokens(output);
+  } else {
+    output = generateGeneralResponse(prompt, isZH);
+    tokens = estimateTokens(output);
   }
-  const data = await res.json();
-  const outputText = data.choices?.[0]?.message?.content || "";
-  const outputTokens = data.usage?.completion_tokens || estimateInputTokens(outputText);
-  const realInputTokens = data.usage?.prompt_tokens || inputTokens;
-  return { text: outputText, tokensUsed: realInputTokens + outputTokens };
+
+  return { text: output, tokens };
+}
+
+function generateCodeResponse(prompt: string, zh: boolean): string {
+  const lang = prompt.includes("python") || prompt.includes("Python") ? "python"
+    : prompt.includes("javascript") || prompt.includes("js") ? "javascript"
+    : prompt.includes("react") || prompt.includes("React") ? "tsx"
+    : prompt.includes("rust") || prompt.includes("Rust") ? "rust"
+    : prompt.includes("go") || prompt.includes("Go") ? "go"
+    : "typescript";
+
+  const codeExamples: Record<string, string> = {
+    python: `#!/usr/bin/env python3
+"""Generated by TokenFund AI Agent — Demo Mode"""
+
+def solve_problem(data):
+    """Main solution function"""
+    result = []
+    for item in data:
+        # Process each item
+        processed = process_item(item)
+        result.append(processed)
+    return result
+
+def process_item(item):
+    """Process a single item"""
+    return item * 2  # Replace with actual logic
+
+# Example usage
+if __name__ == "__main__":
+    sample_data = [1, 2, 3, 4, 5]
+    output = solve_problem(sample_data)
+    print(f"Result: {output}")`,
+    javascript: `// Generated by TokenFund AI Agent — Demo Mode
+
+function solveProblem(data) {
+  const result = [];
+  for (const item of data) {
+    const processed = processItem(item);
+    result.push(processed);
+  }
+  return result;
+}
+
+function processItem(item) {
+  return item * 2; // Replace with actual logic
+}
+
+// Example usage
+const sampleData = [1, 2, 3, 4, 5];
+const output = solveProblem(sampleData);
+console.log('Result:', output);`,
+    tsx: `// Generated by TokenFund AI Agent — Demo Mode
+import React, { useState } from 'react';
+
+interface Props {
+  title: string;
+  onSubmit: (data: string) => void;
+}
+
+export default function MyComponent({ title, onSubmit }: Props) {
+  const [value, setValue] = useState('');
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onSubmit(value);
+  };
+
+  return (
+    <div className="container">
+      <h2>{title}</h2>
+      <form onSubmit={handleSubmit}>
+        <input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="Enter text..."
+        />
+        <button type="submit">Submit</button>
+      </form>
+    </div>
+  );
+}`,
+    typescript: `// Generated by TokenFund AI Agent — Demo Mode
+
+interface DataItem {
+  id: string;
+  value: number;
+}
+
+function solveProblem(data: DataItem[]): DataItem[] {
+  return data.map(item => ({
+    ...item,
+    value: item.value * 2, // Replace with actual logic
+  }));
+}
+
+// Example usage
+const sample: DataItem[] = [
+  { id: 'a', value: 1 },
+  { id: 'b', value: 2 },
+];
+console.log(solveProblem(sample));`,
+  };
+
+  const code = codeExamples[lang] || codeExamples.typescript;
+  const header = zh
+    ? `## 🟡 AI Agent 模拟模式
+
+> 💡 **提示**: 添加真实 API Key 后，AI 会根据你的需求生成定制代码。
+> 当前为基于模板的模拟输出。前往 [仪表盘] 添加 API Key 获取真实 AI 生成。
+
+**你的需求**: ${prompt.slice(0, 150)}${prompt.length > 150 ? "..." : ""}
+
+---
+
+### 生成的 ${lang.toUpperCase()} 代码模板
+
+\`\`\`${lang}
+${code}
+\`\`\`
+
+---
+
+### 使用说明
+
+1. 复制上方代码到你的项目
+2. 根据实际需求修改 \`// Replace with actual logic\` 部分
+3. 运行 \`npm install\` / \`pip install\` 安装依赖
+4. 测试代码是否按预期工作
+
+> 🔗 添加真实 API Key 后，AI Agent 会根据你的具体需求生成完全定制化的代码。`
+    : `## 🟡 AI Agent Demo Mode
+
+> 💡 **Tip**: Add a real API Key and the AI will generate fully customized code for your needs.
+> This is template-based output. Go to [Dashboard] to add your API key for real AI generation.
+
+**Your request**: ${prompt.slice(0, 150)}${prompt.length > 150 ? "..." : ""}
+
+---
+
+### Generated ${lang.toUpperCase()} code template
+
+\`\`\`${lang}
+${code}
+\`\`\`
+
+---
+
+### How to use
+
+1. Copy the code above to your project
+2. Modify \`// Replace with actual logic\` sections for your use case
+3. Run \`npm install\` / \`pip install\` to install dependencies
+4. Test the code works as expected
+
+> 🔗 Add a real API Key to get fully customized AI-generated code.`;
+
+  return header;
+}
+
+function generateDocumentResponse(prompt: string, zh: boolean): string {
+  const title = extractTitle(prompt);
+
+  if (zh) {
+    return `## 🟡 AI Agent 模拟模式 — 文档生成
+
+> 💡 **提示**: 添加真实 API Key 后，AI 会根据你的需求生成完整文档。当前为模板输出。
+
+---
+
+# ${title}
+
+## 一、项目概述
+
+本项目旨在解决 **${prompt.replace(/[帮给我请]|生成|一个|一份/g, "").slice(0, 60).trim()}** 的核心需求。通过系统化的方案设计和实施，达到降本增效、优化流程的目标。
+
+## 二、背景与动机
+
+在当前快速发展的技术环境下，传统方式已难以满足日益增长的需求。本项目将从以下维度进行突破：
+
+1. **效率提升**: 自动化重复性工作，将人力从繁琐任务中解放
+2. **质量保障**: 引入标准化流程，确保输出的一致性和可靠性
+3. **成本控制**: 通过技术手段降低运营成本
+
+## 三、技术方案
+
+### 3.1 架构设计
+
+本系统采用模块化架构，主要包括以下层次：
+
+- **数据层**: 负责数据的采集、清洗和存储
+- **业务层**: 实现核心业务逻辑和处理流程
+- **展示层**: 提供用户友好的交互界面
+
+### 3.2 技术选型
+
+| 模块 | 技术 | 选型理由 |
+|------|------|----------|
+| 前端 | React/Next.js | 生态健全，开发效率高 |
+| 后端 | Node.js/Python | 灵活高效 |
+| 数据库 | PostgreSQL | 成熟稳定，扩展性好 |
+| 部署 | Docker + K8s | 易于运维和扩展 |
+
+## 四、实施计划
+
+### 第一阶段：基础搭建 (第 1-2 周)
+- 环境搭建与工具链配置
+- 核心模块开发
+
+### 第二阶段：功能开发 (第 3-6 周)
+- 主要功能实现
+- 单元测试与集成测试
+
+### 第三阶段：上线部署 (第 7-8 周)
+- 性能优化
+- 上线发布与监控
+
+## 五、风险评估
+
+| 风险 | 影响 | 应对措施 |
+|------|------|----------|
+| 技术难度高 | 延误交付 | 提前技术预研 |
+| 需求变更 | 返工成本 | 敏捷迭代 |
+| 资源短缺 | 进度延期 | 合理排期 |
+
+## 六、预期成果
+
+1. 完整的可交付系统
+2. 技术文档和用户手册
+3. 开源代码仓库
+
+---
+
+> 📥 **下载格式**: 点击下方按钮可下载为 Markdown / HTML / 纯文本
+> 🔗 **升级到真实 AI**: 在 Dashboard 添加 API Key 后，AI 会根据你的具体需求生成定制化文档`;
+  }
+
+  return `## 🟡 AI Agent Demo Mode — Document Generator
+
+> 💡 **Tip**: Add a real API Key for fully customized AI-generated documents.
+
+---
+
+# ${title}
+
+## 1. Executive Summary
+
+This project addresses the core need of **${prompt.replace(/help|generate|create|a|an|me/gi, "").slice(0, 60).trim()}**. Through systematic solution design and implementation, we aim to improve efficiency and optimize processes.
+
+## 2. Background & Motivation
+
+In today's rapidly evolving technical landscape, traditional approaches can no longer meet growing demands. This project tackles the challenge from the following angles:
+
+1. **Efficiency**: Automate repetitive work
+2. **Quality**: Introduce standardized processes
+3. **Cost**: Reduce operational costs through technology
+
+## 3. Technical Approach
+
+### 3.1 Architecture
+
+Modular architecture with three tiers:
+- **Data Layer**: Collection, cleaning, storage
+- **Business Layer**: Core logic and processing
+- **Presentation Layer**: User interface
+
+### 3.2 Tech Stack
+
+| Component | Technology | Rationale |
+|-----------|-----------|-----------|
+| Frontend | React/Next.js | Rich ecosystem |
+| Backend | Node.js/Python | Flexible, efficient |
+| Database | PostgreSQL | Mature, scalable |
+| Deployment | Docker + K8s | Easy ops |
+
+## 4. Implementation Timeline
+
+- **Phase 1 (Week 1-2)**: Foundation & toolchain
+- **Phase 2 (Week 3-6)**: Feature development
+- **Phase 3 (Week 7-8)**: Deployment & launch
+
+## 5. Risk Assessment
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| Technical complexity | Delay | Early research |
+| Requirement changes | Rework | Agile iteration |
+| Resource shortage | Slowdown | Smart scheduling |
+
+## 6. Expected Outcomes
+
+1. Complete deliverable system
+2. Technical documentation
+3. Open source repository
+
+---
+
+> 📥 **Download Formats**: Click below to download as Markdown / HTML / Plain Text
+> 🔗 **Upgrade to Real AI**: Add your API Key in Dashboard for fully customized AI documents`;
+}
+
+function generateAnalysisResponse(prompt: string, zh: boolean): string {
+  if (zh) {
+    return `## 🟡 AI Agent 模拟模式 — 数据分析
+
+> 💡 添加真实 API Key 后可使用真实 AI 进行深度分析。
+
+---
+
+### 📊 分析报告
+
+**分析主题**: ${prompt.slice(0, 100)}${prompt.length > 100 ? "..." : ""}
+
+#### 1. 数据概览
+
+| 指标 | 数值 | 变化 |
+|------|------|------|
+| 总样本量 | N | - |
+| 平均值 | μ | - |
+| 标准差 | σ | - |
+| 中位数 | M | - |
+
+#### 2. 趋势分析
+
+基于当前数据模式，主要趋势如下：
+
+- **增长趋势**: 整体呈上升态势
+- **周期性波动**: 存在季度性变化
+- **异常点检测**: 需要进一步排查
+
+#### 3. 建议措施
+
+1. 加强对核心指标的监控
+2. 建立预警机制
+3. 定期复盘优化策略
+
+---
+
+> 🔗 添加真实 API Key 获取定制化数据分析报告。`;
+  }
+  return `## 🟡 AI Agent Demo Mode — Data Analysis
+
+> 💡 Add a real API Key for actual AI-powered analysis.
+
+---
+
+### 📊 Analysis Report
+
+**Topic**: ${prompt.slice(0, 100)}${prompt.length > 100 ? "..." : ""}
+
+#### 1. Data Overview
+
+| Metric | Value | Change |
+|--------|-------|--------|
+| Sample Size | N | - |
+| Mean | μ | - |
+| Std Dev | σ | - |
+| Median | M | - |
+
+#### 2. Trend Analysis
+
+- **Growth**: Overall upward trend
+- **Seasonality**: Quarterly variations detected
+- **Outliers**: Further investigation needed
+
+#### 3. Recommendations
+
+1. Strengthen KPI monitoring
+2. Establish alerting mechanisms
+3. Regular strategy reviews
+
+---
+
+> 🔗 Add a real API Key for customized AI analysis reports.`;
+}
+
+function generateGeneralResponse(prompt: string, zh: boolean): string {
+  if (zh) {
+    return `## 🟡 AI Agent 模拟模式
+
+> 💡 **重要说明**: 当前运行在模拟模式。添加真实 API Key 后可以调用真正的 AI 模型来生成完全定制化的内容。
+> 前往 [仪表盘](/zh/dashboard) → API Keys → 添加你的 Key。
+
+---
+
+### 📝 关于你的问题
+
+**你的输入**: ${prompt}
+
+当前 Agent 处于演示模式。在实际运行中，AI 会：
+
+1. **理解你的需求**: 分析输入内容，拆解为可执行的子任务
+2. **调用 LLM**: 使用 ${"众筹池中的 Token"} 调用大语言模型
+3. **生成结果**: 返回结构化、可下载的输出
+4. **追踪消耗**: 记录每次调用的 Token 消耗
+
+---
+
+### 🚀 如何启用真实 AI
+
+1. 注册 AI 提供商账号（Anthropic / OpenAI / DeepSeek / Qwen）
+2. 生成 API Key
+3. 在 TokenFund Dashboard 中添加 Key
+4. 回到沙盒，所有对话将由真实 AI 处理
+
+---
+
+> 📥 你可以下载此回复为 Markdown / HTML / 纯文本`;
+  }
+  return `## 🟡 AI Agent Demo Mode
+
+> 💡 **Important**: Running in simulation mode. Add a real API Key to unlock actual AI-powered content generation.
+> Go to [Dashboard](/en/dashboard) → API Keys → Add your key.
+
+---
+
+### 📝 About your query
+
+**Your input**: ${prompt}
+
+The agent is currently in demo mode. In production, the AI would:
+
+1. **Understand**: Parse your request into actionable subtasks
+2. **Execute**: Call the LLM using pooled tokens
+3. **Deliver**: Return structured, downloadable output
+4. **Track**: Log token consumption per call
+
+---
+
+### 🚀 How to enable real AI
+
+1. Sign up at an AI provider (Anthropic / OpenAI / DeepSeek / Qwen)
+2. Generate an API Key
+3. Add it in TokenFund Dashboard
+4. All conversations will be powered by real AI
+
+---
+
+> 📥 Download this response as Markdown / HTML / Plain Text`;
+}
+
+function extractTitle(prompt: string): string {
+  // Try to extract a title from the prompt
+  const cleaned = prompt
+    .replace(/帮我|生成|一个|一份|please|help|me|generate|create|a|an|写|的/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (cleaned.length <= 60) return cleaned;
+
+  // Take first sentence-like fragment
+  const sentences = cleaned.split(/[。，.!?,;；]/);
+  if (sentences[0].length >= 8) return sentences[0].trim();
+
+  return cleaned.slice(0, 40) + "...";
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { projectId, message, provider, model } = body;
+    const { projectId, message } = body;
 
     if (!projectId || !message) {
-      return NextResponse.json(
-        { error: "Missing projectId or message" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Missing projectId or message" }, { status: 400 });
     }
 
-    // Get project
-    const project = await prisma.project.findUnique({
-      where: { id: projectId },
+    const project = await prisma.project.findUnique({ where: { id: projectId } });
+    if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
+
+    // Try real API first — search ALL providers for any active key
+    const activeKey = await prisma.apiKey.findFirst({
+      where: { isActive: true },
+      orderBy: { createdAt: "desc" },
     });
 
-    if (!project) {
-      return NextResponse.json({ error: "Project not found" }, { status: 404 });
-    }
+    let result: { text: string; tokensUsed: number; mode: string };
 
-    if (project.status !== "IN_PROGRESS" && project.status !== "COMPLETED") {
-      return NextResponse.json(
-        { error: "Project has not reached funding goal yet" },
-        { status: 400 }
-      );
-    }
-
-    const useProvider = provider || project.llmProvider;
-    const useModel = model || project.llmModel;
-
-    // Check remaining tokens
-    const usedTokens = await prisma.tokenUsage.aggregate({
-      _sum: { amount: true },
-      where: { projectId },
-    });
-    const totalUsed = usedTokens._sum.amount || 0;
-    const remaining = project.tokenRaised - totalUsed;
-
-    if (remaining <= 0) {
-      return NextResponse.json(
-        { error: "Project has no tokens remaining" },
-        { status: 400 }
-      );
-    }
-
-    // Call the LLM
-    let result: { text: string; tokensUsed: number };
-    try {
-      // For demo/sandbox: try to use any available API key for this provider
-      // In production, use the project's allocated keys
-      const apiKeyRecord = await prisma.apiKey.findFirst({
-        where: { provider: useProvider, isActive: true },
-        orderBy: { createdAt: "desc" },
-      });
-
-      if (!apiKeyRecord) {
-        // No API key available — return a simulated response for demo
-        const simTokens = estimateInputTokens(message) * 2;
+    if (activeKey) {
+      try {
+        const key = decrypt(activeKey.encryptedKey);
+        const real = await callRealLLM(activeKey.provider, project.llmModel || "gpt-4o", message, key);
+        result = { text: real.text, tokensUsed: real.tokens, mode: "real" };
+      } catch (err: any) {
+        // Real API failed — fall back to smart simulation
+        const sim = runSimulation(message);
         result = {
-          text: `[Sandbox Mode] No API key configured for ${useProvider}.\n\nYour message: "${message.slice(0, 200)}"\n\nThis is a simulated response. To enable real AI, add a ${useProvider} API key in your dashboard.\n\nEstimated tokens that would be used: ~${simTokens}`,
-          tokensUsed: simTokens,
+          text: sim.text + `\n\n\n---\n⚠️ 真实 API 调用失败 (${err.message.slice(0, 80)})\n当前展示为智能模拟输出。`,
+          tokensUsed: sim.tokens,
+          mode: "simulation",
         };
-      } else {
-        const decryptedKey = decrypt(apiKeyRecord.encryptedKey);
-        result = await callLLM(useProvider, useModel, message, decryptedKey);
       }
-    } catch (err: any) {
-      console.error("LLM call failed:", err.message);
-      return NextResponse.json(
-        { error: `LLM call failed: ${err.message}` },
-        { status: 500 }
-      );
+    } else {
+      // No key — smart simulation
+      const sim = runSimulation(message);
+      result = { text: sim.text, tokensUsed: sim.tokens, mode: "simulation" };
     }
 
-    // Log token usage
+    // Log to database
     await prisma.tokenUsage.create({
       data: {
         projectId,
         amount: result.tokensUsed,
-        provider: useProvider,
-        model: useModel,
+        provider: activeKey?.provider || project.llmProvider,
+        model: project.llmModel,
         purpose: message.slice(0, 200),
       },
     });
 
     // Get updated stats
-    const updatedUsage = await prisma.tokenUsage.aggregate({
-      _sum: { amount: true },
-      where: { projectId },
-    });
-    const updatedTotalUsed = updatedUsage._sum.amount || 0;
-    const updatedRemaining = project.tokenRaised - updatedTotalUsed;
+    const usageTotal = await prisma.tokenUsage.aggregate({ _sum: { amount: true }, where: { projectId } });
+    const totalUsed = usageTotal._sum.amount || 0;
 
     return NextResponse.json({
       text: result.text,
       tokensUsed: result.tokensUsed,
-      totalUsed: updatedTotalUsed,
-      remaining: updatedRemaining,
-      provider: useProvider,
-      model: useModel,
+      totalUsed,
+      remaining: Math.max(0, project.tokenRaised - totalUsed),
+      provider: activeKey?.provider || project.llmProvider,
+      model: project.llmModel,
+      mode: result.mode,
     });
   } catch (error) {
-    console.error("Agent proxy error:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    console.error("Agent error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
