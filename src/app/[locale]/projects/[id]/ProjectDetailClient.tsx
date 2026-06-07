@@ -169,7 +169,7 @@ export default function ProjectDetailClient({
                       </p>
                     </div>
                     <a
-                      href={d.fileUrl}
+                      href={`/api/deliverables/${d.id}/download`}
                       className="btn btn-secondary text-xs"
                       target="_blank"
                       rel="noopener noreferrer"

@@ -1,541 +1,203 @@
-// AI Agent endpoint — real LLM calls + smart simulation
+// Real AI Agent with tool calling — produces actual deliverable files
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { decrypt } from "@/lib/encryption";
 
-const PROVIDER_URLS: Record<string, string> = {
+// ============================================================
+// LLM Provider URLs
+// ============================================================
+const API_URLS: Record<string, string> = {
   anthropic: "https://api.anthropic.com/v1/messages",
   openai: "https://api.openai.com/v1/chat/completions",
   deepseek: "https://api.deepseek.com/v1/chat/completions",
   qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
 };
 
-function estimateTokens(text: string): number {
-  let t = 0;
-  for (const ch of text) t += /[\x00-\x7F]/.test(ch) ? 0.25 : 0.5;
-  return Math.ceil(t);
-}
+// ============================================================
+// Agent Tools — the Agent can call these to produce real files
+// ============================================================
+const TOOLS = [
+  {
+    name: "create_file",
+    description: "Create a file and save it as a project deliverable. Use this to produce the final output the user asked for.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "File title/name (e.g. 'Project Plan', 'Login Component')" },
+        content: { type: "string", description: "The full file content" },
+        format: { type: "string", enum: ["md", "html", "txt", "json", "csv"], description: "File format" },
+        description: { type: "string", description: "Short description of what this file contains" },
+      },
+      required: ["title", "content", "format", "description"],
+    },
+  },
+  {
+    name: "create_code",
+    description: "Create a code file as a project deliverable. Use for scripts, components, or any programming code.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "File name with extension (e.g. 'login.tsx', 'main.py')" },
+        content: { type: "string", description: "The complete source code" },
+        language: { type: "string", enum: ["typescript", "python", "javascript", "html", "css", "json", "rust", "go", "other"], description: "Programming language" },
+        description: { type: "string", description: "What this code does" },
+      },
+      required: ["title", "content", "language", "description"],
+    },
+  },
+];
 
-async function callRealLLM(provider: string, model: string, message: string, apiKey: string) {
-  const url = PROVIDER_URLS[provider];
+// ============================================================
+// Real API caller
+// ============================================================
+async function callLLM(
+  provider: string,
+  model: string,
+  apiKey: string,
+  messages: Array<{ role: string; content: string }>,
+  tools?: any[]
+) {
+  const url = API_URLS[provider];
   if (!url) throw new Error(`Unknown provider: ${provider}`);
 
   if (provider === "anthropic") {
+    const body: any = {
+      model,
+      max_tokens: 4096,
+      messages: messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      })),
+    };
+    if (tools) {
+      body.tools = tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: {
+          type: "object",
+          properties: t.parameters.properties,
+          required: t.parameters.required,
+        },
+      }));
+    }
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model, max_tokens: 4096, messages: [{ role: "user", content: message }] }),
+      body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`API ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    const d = await res.json();
-    return { text: d.content?.[0]?.text || "", tokens: (d.usage?.input_tokens || 0) + (d.usage?.output_tokens || 0) };
+    if (!res.ok) throw new Error(`API ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    const data = await res.json();
+
+    // Check for tool use
+    const toolBlocks = data.content?.filter((c: any) => c.type === "tool_use");
+    const textBlocks = data.content?.filter((c: any) => c.type === "text");
+    const text = textBlocks?.map((t: any) => t.text).join("\n") || "";
+    const usage = (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0);
+
+    return {
+      text,
+      toolCalls: toolBlocks?.map((t: any) => ({
+        name: t.name,
+        arguments: t.input,
+      })) || [],
+      usage,
+    };
+  }
+
+  // OpenAI / DeepSeek / Qwen
+  const body: any = {
+    model,
+    messages,
+    max_tokens: 4096,
+  };
+  if (tools) {
+    body.tools = tools.map((t) => ({
+      type: "function",
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters,
+      },
+    }));
+    body.tool_choice = "auto";
   }
 
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ model, messages: [{ role: "user", content: message }], max_tokens: 4096 }),
+    body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`API ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const d = await res.json();
-  return { text: d.choices?.[0]?.message?.content || "", tokens: (d.usage?.prompt_tokens || 0) + (d.usage?.completion_tokens || 0) };
+  if (!res.ok) throw new Error(`API ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const data = await res.json();
+
+  const choice = data.choices?.[0];
+  const message = choice?.message;
+  const text = message?.content || "";
+  const toolCalls = message?.tool_calls?.map((tc: any) => ({
+    name: tc.function.name,
+    arguments: JSON.parse(tc.function.arguments),
+  })) || [];
+  const usage = (data.usage?.prompt_tokens || 0) + (data.usage?.completion_tokens || 0);
+
+  return { text, toolCalls, usage };
 }
 
-// Smart simulation that actually generates useful content based on user prompt
-function runSimulation(prompt: string): { text: string; tokens: number } {
-  const isZH = /[一-鿿]/.test(prompt);
-  const lower = prompt.toLowerCase();
+// ============================================================
+// Tool executor — actually creates files as deliverables
+// ============================================================
+async function executeTool(toolCall: { name: string; arguments: any }, projectId: string) {
+  const args = toolCall.arguments;
 
-  // Detect what the user wants
-  const wantsCode =
-    lower.includes("code") || lower.includes("代码") || lower.includes("function") || lower.includes("函数") ||
-    lower.includes("script") || lower.includes("component") || lower.includes("组件") || lower.includes("python") ||
-    lower.includes("react") || lower.includes("javascript") || lower.includes("写一个") || lower.includes("write a");
+  if (toolCall.name === "create_file") {
+    const { title, content, format, description } = args;
 
-  const wantsDoc =
-    lower.includes("word") || lower.includes("文档") || lower.includes("doc") || lower.includes("报告") ||
-    lower.includes("report") || lower.includes("计划书") || lower.includes("proposal") || lower.includes("方案") ||
-    lower.includes("计划") || lower.includes("plan") || lower.includes("document") || lower.includes("合同") ||
-    lower.includes("合同") || lower.includes("contract");
+    const deliverable = await prisma.deliverable.create({
+      data: {
+        projectId,
+        title,
+        description: description || "",
+        fileUrl: `data:text/${format === "html" ? "html" : format === "json" ? "json" : format === "csv" ? "csv" : "markdown"};base64,${Buffer.from(content).toString("base64")}`,
+        fileSize: Buffer.byteLength(content, "utf-8"),
+        version: "1.0",
+      },
+    });
 
-  const wantsAnalysis =
-    lower.includes("分析") || lower.includes("analysis") || lower.includes("数据") || lower.includes("data") ||
-    lower.includes("比较") || lower.includes("compare");
-
-  let output = "";
-  let tokens = 0;
-
-  if (wantsCode) {
-    output = generateCodeResponse(prompt, isZH);
-    tokens = estimateTokens(output);
-  } else if (wantsDoc) {
-    output = generateDocumentResponse(prompt, isZH);
-    tokens = estimateTokens(output);
-  } else if (wantsAnalysis) {
-    output = generateAnalysisResponse(prompt, isZH);
-    tokens = estimateTokens(output);
-  } else {
-    output = generateGeneralResponse(prompt, isZH);
-    tokens = estimateTokens(output);
+    return {
+      success: true,
+      message: `✅ Created file: "${title}.${format}" (${Buffer.byteLength(content, "utf-8")} bytes)`,
+      deliverableId: deliverable.id,
+      fileUrl: `/api/deliverables/${deliverable.id}/download`,
+    };
   }
 
-  return { text: output, tokens };
-}
+  if (toolCall.name === "create_code") {
+    const { title, content, language, description } = args;
 
-function generateCodeResponse(prompt: string, zh: boolean): string {
-  const lang = prompt.includes("python") || prompt.includes("Python") ? "python"
-    : prompt.includes("javascript") || prompt.includes("js") ? "javascript"
-    : prompt.includes("react") || prompt.includes("React") ? "tsx"
-    : prompt.includes("rust") || prompt.includes("Rust") ? "rust"
-    : prompt.includes("go") || prompt.includes("Go") ? "go"
-    : "typescript";
+    const deliverable = await prisma.deliverable.create({
+      data: {
+        projectId,
+        title,
+        description: description || "",
+        fileUrl: `data:text/plain;base64,${Buffer.from(content).toString("base64")}`,
+        fileSize: Buffer.byteLength(content, "utf-8"),
+        version: "1.0",
+      },
+    });
 
-  const codeExamples: Record<string, string> = {
-    python: `#!/usr/bin/env python3
-"""Generated by TokenFund AI Agent — Demo Mode"""
-
-def solve_problem(data):
-    """Main solution function"""
-    result = []
-    for item in data:
-        # Process each item
-        processed = process_item(item)
-        result.append(processed)
-    return result
-
-def process_item(item):
-    """Process a single item"""
-    return item * 2  # Replace with actual logic
-
-# Example usage
-if __name__ == "__main__":
-    sample_data = [1, 2, 3, 4, 5]
-    output = solve_problem(sample_data)
-    print(f"Result: {output}")`,
-    javascript: `// Generated by TokenFund AI Agent — Demo Mode
-
-function solveProblem(data) {
-  const result = [];
-  for (const item of data) {
-    const processed = processItem(item);
-    result.push(processed);
-  }
-  return result;
-}
-
-function processItem(item) {
-  return item * 2; // Replace with actual logic
-}
-
-// Example usage
-const sampleData = [1, 2, 3, 4, 5];
-const output = solveProblem(sampleData);
-console.log('Result:', output);`,
-    tsx: `// Generated by TokenFund AI Agent — Demo Mode
-import React, { useState } from 'react';
-
-interface Props {
-  title: string;
-  onSubmit: (data: string) => void;
-}
-
-export default function MyComponent({ title, onSubmit }: Props) {
-  const [value, setValue] = useState('');
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    onSubmit(value);
-  };
-
-  return (
-    <div className="container">
-      <h2>{title}</h2>
-      <form onSubmit={handleSubmit}>
-        <input
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder="Enter text..."
-        />
-        <button type="submit">Submit</button>
-      </form>
-    </div>
-  );
-}`,
-    typescript: `// Generated by TokenFund AI Agent — Demo Mode
-
-interface DataItem {
-  id: string;
-  value: number;
-}
-
-function solveProblem(data: DataItem[]): DataItem[] {
-  return data.map(item => ({
-    ...item,
-    value: item.value * 2, // Replace with actual logic
-  }));
-}
-
-// Example usage
-const sample: DataItem[] = [
-  { id: 'a', value: 1 },
-  { id: 'b', value: 2 },
-];
-console.log(solveProblem(sample));`,
-  };
-
-  const code = codeExamples[lang] || codeExamples.typescript;
-  const header = zh
-    ? `## 🟡 AI Agent 模拟模式
-
-> 💡 **提示**: 添加真实 API Key 后，AI 会根据你的需求生成定制代码。
-> 当前为基于模板的模拟输出。前往 [仪表盘] 添加 API Key 获取真实 AI 生成。
-
-**你的需求**: ${prompt.slice(0, 150)}${prompt.length > 150 ? "..." : ""}
-
----
-
-### 生成的 ${lang.toUpperCase()} 代码模板
-
-\`\`\`${lang}
-${code}
-\`\`\`
-
----
-
-### 使用说明
-
-1. 复制上方代码到你的项目
-2. 根据实际需求修改 \`// Replace with actual logic\` 部分
-3. 运行 \`npm install\` / \`pip install\` 安装依赖
-4. 测试代码是否按预期工作
-
-> 🔗 添加真实 API Key 后，AI Agent 会根据你的具体需求生成完全定制化的代码。`
-    : `## 🟡 AI Agent Demo Mode
-
-> 💡 **Tip**: Add a real API Key and the AI will generate fully customized code for your needs.
-> This is template-based output. Go to [Dashboard] to add your API key for real AI generation.
-
-**Your request**: ${prompt.slice(0, 150)}${prompt.length > 150 ? "..." : ""}
-
----
-
-### Generated ${lang.toUpperCase()} code template
-
-\`\`\`${lang}
-${code}
-\`\`\`
-
----
-
-### How to use
-
-1. Copy the code above to your project
-2. Modify \`// Replace with actual logic\` sections for your use case
-3. Run \`npm install\` / \`pip install\` to install dependencies
-4. Test the code works as expected
-
-> 🔗 Add a real API Key to get fully customized AI-generated code.`;
-
-  return header;
-}
-
-function generateDocumentResponse(prompt: string, zh: boolean): string {
-  const title = extractTitle(prompt);
-
-  if (zh) {
-    return `## 🟡 AI Agent 模拟模式 — 文档生成
-
-> 💡 **提示**: 添加真实 API Key 后，AI 会根据你的需求生成完整文档。当前为模板输出。
-
----
-
-# ${title}
-
-## 一、项目概述
-
-本项目旨在解决 **${prompt.replace(/[帮给我请]|生成|一个|一份/g, "").slice(0, 60).trim()}** 的核心需求。通过系统化的方案设计和实施，达到降本增效、优化流程的目标。
-
-## 二、背景与动机
-
-在当前快速发展的技术环境下，传统方式已难以满足日益增长的需求。本项目将从以下维度进行突破：
-
-1. **效率提升**: 自动化重复性工作，将人力从繁琐任务中解放
-2. **质量保障**: 引入标准化流程，确保输出的一致性和可靠性
-3. **成本控制**: 通过技术手段降低运营成本
-
-## 三、技术方案
-
-### 3.1 架构设计
-
-本系统采用模块化架构，主要包括以下层次：
-
-- **数据层**: 负责数据的采集、清洗和存储
-- **业务层**: 实现核心业务逻辑和处理流程
-- **展示层**: 提供用户友好的交互界面
-
-### 3.2 技术选型
-
-| 模块 | 技术 | 选型理由 |
-|------|------|----------|
-| 前端 | React/Next.js | 生态健全，开发效率高 |
-| 后端 | Node.js/Python | 灵活高效 |
-| 数据库 | PostgreSQL | 成熟稳定，扩展性好 |
-| 部署 | Docker + K8s | 易于运维和扩展 |
-
-## 四、实施计划
-
-### 第一阶段：基础搭建 (第 1-2 周)
-- 环境搭建与工具链配置
-- 核心模块开发
-
-### 第二阶段：功能开发 (第 3-6 周)
-- 主要功能实现
-- 单元测试与集成测试
-
-### 第三阶段：上线部署 (第 7-8 周)
-- 性能优化
-- 上线发布与监控
-
-## 五、风险评估
-
-| 风险 | 影响 | 应对措施 |
-|------|------|----------|
-| 技术难度高 | 延误交付 | 提前技术预研 |
-| 需求变更 | 返工成本 | 敏捷迭代 |
-| 资源短缺 | 进度延期 | 合理排期 |
-
-## 六、预期成果
-
-1. 完整的可交付系统
-2. 技术文档和用户手册
-3. 开源代码仓库
-
----
-
-> 📥 **下载格式**: 点击下方按钮可下载为 Markdown / HTML / 纯文本
-> 🔗 **升级到真实 AI**: 在 Dashboard 添加 API Key 后，AI 会根据你的具体需求生成定制化文档`;
+    return {
+      success: true,
+      message: `✅ Created ${language} file: "${title}" (${Buffer.byteLength(content, "utf-8")} bytes)`,
+      deliverableId: deliverable.id,
+      fileUrl: `/api/deliverables/${deliverable.id}/download`,
+    };
   }
 
-  return `## 🟡 AI Agent Demo Mode — Document Generator
-
-> 💡 **Tip**: Add a real API Key for fully customized AI-generated documents.
-
----
-
-# ${title}
-
-## 1. Executive Summary
-
-This project addresses the core need of **${prompt.replace(/help|generate|create|a|an|me/gi, "").slice(0, 60).trim()}**. Through systematic solution design and implementation, we aim to improve efficiency and optimize processes.
-
-## 2. Background & Motivation
-
-In today's rapidly evolving technical landscape, traditional approaches can no longer meet growing demands. This project tackles the challenge from the following angles:
-
-1. **Efficiency**: Automate repetitive work
-2. **Quality**: Introduce standardized processes
-3. **Cost**: Reduce operational costs through technology
-
-## 3. Technical Approach
-
-### 3.1 Architecture
-
-Modular architecture with three tiers:
-- **Data Layer**: Collection, cleaning, storage
-- **Business Layer**: Core logic and processing
-- **Presentation Layer**: User interface
-
-### 3.2 Tech Stack
-
-| Component | Technology | Rationale |
-|-----------|-----------|-----------|
-| Frontend | React/Next.js | Rich ecosystem |
-| Backend | Node.js/Python | Flexible, efficient |
-| Database | PostgreSQL | Mature, scalable |
-| Deployment | Docker + K8s | Easy ops |
-
-## 4. Implementation Timeline
-
-- **Phase 1 (Week 1-2)**: Foundation & toolchain
-- **Phase 2 (Week 3-6)**: Feature development
-- **Phase 3 (Week 7-8)**: Deployment & launch
-
-## 5. Risk Assessment
-
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| Technical complexity | Delay | Early research |
-| Requirement changes | Rework | Agile iteration |
-| Resource shortage | Slowdown | Smart scheduling |
-
-## 6. Expected Outcomes
-
-1. Complete deliverable system
-2. Technical documentation
-3. Open source repository
-
----
-
-> 📥 **Download Formats**: Click below to download as Markdown / HTML / Plain Text
-> 🔗 **Upgrade to Real AI**: Add your API Key in Dashboard for fully customized AI documents`;
+  return { success: false, message: `Unknown tool: ${toolCall.name}` };
 }
 
-function generateAnalysisResponse(prompt: string, zh: boolean): string {
-  if (zh) {
-    return `## 🟡 AI Agent 模拟模式 — 数据分析
-
-> 💡 添加真实 API Key 后可使用真实 AI 进行深度分析。
-
----
-
-### 📊 分析报告
-
-**分析主题**: ${prompt.slice(0, 100)}${prompt.length > 100 ? "..." : ""}
-
-#### 1. 数据概览
-
-| 指标 | 数值 | 变化 |
-|------|------|------|
-| 总样本量 | N | - |
-| 平均值 | μ | - |
-| 标准差 | σ | - |
-| 中位数 | M | - |
-
-#### 2. 趋势分析
-
-基于当前数据模式，主要趋势如下：
-
-- **增长趋势**: 整体呈上升态势
-- **周期性波动**: 存在季度性变化
-- **异常点检测**: 需要进一步排查
-
-#### 3. 建议措施
-
-1. 加强对核心指标的监控
-2. 建立预警机制
-3. 定期复盘优化策略
-
----
-
-> 🔗 添加真实 API Key 获取定制化数据分析报告。`;
-  }
-  return `## 🟡 AI Agent Demo Mode — Data Analysis
-
-> 💡 Add a real API Key for actual AI-powered analysis.
-
----
-
-### 📊 Analysis Report
-
-**Topic**: ${prompt.slice(0, 100)}${prompt.length > 100 ? "..." : ""}
-
-#### 1. Data Overview
-
-| Metric | Value | Change |
-|--------|-------|--------|
-| Sample Size | N | - |
-| Mean | μ | - |
-| Std Dev | σ | - |
-| Median | M | - |
-
-#### 2. Trend Analysis
-
-- **Growth**: Overall upward trend
-- **Seasonality**: Quarterly variations detected
-- **Outliers**: Further investigation needed
-
-#### 3. Recommendations
-
-1. Strengthen KPI monitoring
-2. Establish alerting mechanisms
-3. Regular strategy reviews
-
----
-
-> 🔗 Add a real API Key for customized AI analysis reports.`;
-}
-
-function generateGeneralResponse(prompt: string, zh: boolean): string {
-  if (zh) {
-    return `## 🟡 AI Agent 模拟模式
-
-> 💡 **重要说明**: 当前运行在模拟模式。添加真实 API Key 后可以调用真正的 AI 模型来生成完全定制化的内容。
-> 前往 [仪表盘](/zh/dashboard) → API Keys → 添加你的 Key。
-
----
-
-### 📝 关于你的问题
-
-**你的输入**: ${prompt}
-
-当前 Agent 处于演示模式。在实际运行中，AI 会：
-
-1. **理解你的需求**: 分析输入内容，拆解为可执行的子任务
-2. **调用 LLM**: 使用 ${"众筹池中的 Token"} 调用大语言模型
-3. **生成结果**: 返回结构化、可下载的输出
-4. **追踪消耗**: 记录每次调用的 Token 消耗
-
----
-
-### 🚀 如何启用真实 AI
-
-1. 注册 AI 提供商账号（Anthropic / OpenAI / DeepSeek / Qwen）
-2. 生成 API Key
-3. 在 TokenFund Dashboard 中添加 Key
-4. 回到沙盒，所有对话将由真实 AI 处理
-
----
-
-> 📥 你可以下载此回复为 Markdown / HTML / 纯文本`;
-  }
-  return `## 🟡 AI Agent Demo Mode
-
-> 💡 **Important**: Running in simulation mode. Add a real API Key to unlock actual AI-powered content generation.
-> Go to [Dashboard](/en/dashboard) → API Keys → Add your key.
-
----
-
-### 📝 About your query
-
-**Your input**: ${prompt}
-
-The agent is currently in demo mode. In production, the AI would:
-
-1. **Understand**: Parse your request into actionable subtasks
-2. **Execute**: Call the LLM using pooled tokens
-3. **Deliver**: Return structured, downloadable output
-4. **Track**: Log token consumption per call
-
----
-
-### 🚀 How to enable real AI
-
-1. Sign up at an AI provider (Anthropic / OpenAI / DeepSeek / Qwen)
-2. Generate an API Key
-3. Add it in TokenFund Dashboard
-4. All conversations will be powered by real AI
-
----
-
-> 📥 Download this response as Markdown / HTML / Plain Text`;
-}
-
-function extractTitle(prompt: string): string {
-  // Try to extract a title from the prompt
-  const cleaned = prompt
-    .replace(/帮我|生成|一个|一份|please|help|me|generate|create|a|an|写|的/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (cleaned.length <= 60) return cleaned;
-
-  // Take first sentence-like fragment
-  const sentences = cleaned.split(/[。，.!?,;；]/);
-  if (sentences[0].length >= 8) return sentences[0].trim();
-
-  return cleaned.slice(0, 40) + "...";
-}
-
+// ============================================================
+// Main POST handler
+// ============================================================
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -548,60 +210,130 @@ export async function POST(request: NextRequest) {
     const project = await prisma.project.findUnique({ where: { id: projectId } });
     if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
 
-    // Try real API first — search ALL providers for any active key
+    // Find any active API key
     const activeKey = await prisma.apiKey.findFirst({
       where: { isActive: true },
       orderBy: { createdAt: "desc" },
     });
 
-    let result: { text: string; tokensUsed: number; mode: string };
+    if (!activeKey) {
+      return NextResponse.json({
+        text: `## ⚠️ 无法使用 AI Agent
 
-    if (activeKey) {
-      try {
-        const key = decrypt(activeKey.encryptedKey);
-        const real = await callRealLLM(activeKey.provider, project.llmModel || "gpt-4o", message, key);
-        result = { text: real.text, tokensUsed: real.tokens, mode: "real" };
-      } catch (err: any) {
-        // Real API failed — fall back to smart simulation
-        const sim = runSimulation(message);
-        result = {
-          text: sim.text + `\n\n\n---\n⚠️ 真实 API 调用失败 (${err.message.slice(0, 80)})\n当前展示为智能模拟输出。`,
-          tokensUsed: sim.tokens,
-          mode: "simulation",
-        };
-      }
-    } else {
-      // No key — smart simulation
-      const sim = runSimulation(message);
-      result = { text: sim.text, tokensUsed: sim.tokens, mode: "simulation" };
+当前平台上没有任何 API Key。AI Agent 需要至少一个 LLM API Key 才能运行。
+
+**如何启用**：
+1. 去 [DeepSeek 平台](https://platform.deepseek.com) 或 [OpenAI](https://platform.openai.com) 注册
+2. 生成一个 API Key
+3. 在你的 [仪表盘](/zh/dashboard) → API Keys → 添加 Key
+4. 回到沙盒，Agent 即可使用
+
+> 💰 DeepSeek 非常便宜，几块钱就能买上千万 token，足够完成大量任务。`,
+        tokensUsed: 0,
+        totalUsed: 0,
+        remaining: project.tokenRaised,
+        provider: project.llmProvider,
+        model: project.llmModel,
+        mode: "no-key",
+      }, { status: 200 });
     }
 
-    // Log to database
-    await prisma.tokenUsage.create({
-      data: {
-        projectId,
-        amount: result.tokensUsed,
-        provider: activeKey?.provider || project.llmProvider,
-        model: project.llmModel,
-        purpose: message.slice(0, 200),
-      },
-    });
+    // === Run the Agent Loop ===
+    const apiKey = decrypt(activeKey.encryptedKey);
+    const provider = activeKey.provider;
+    const model = project.llmModel;
 
-    // Get updated stats
-    const usageTotal = await prisma.tokenUsage.aggregate({ _sum: { amount: true }, where: { projectId } });
-    const totalUsed = usageTotal._sum.amount || 0;
+    // System prompt
+    const systemPrompt = `You are an AI Agent on TokenFund. Your job is to produce real files as deliverables.
 
+When a user asks you to create something (a document, plan, code, report, etc.), you MUST use the "create_file" or "create_code" tool to actually generate a downloadable file. Do NOT just describe what you would do — actually create the file.
+
+Rules:
+- Use "create_file" for documents, reports, plans, articles (formats: md, html, txt, json, csv)
+- Use "create_code" for code/scripts/components
+- Create COMPLETE, useful content — not templates or placeholders
+- After creating files, summarize what you made and how to use it
+- Write in the same language the user used`;
+
+    const messages: Array<{ role: string; content: string }> = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: message },
+    ];
+
+    let totalTokens = 0;
+    const createdFiles: string[] = [];
+    const MAX_LOOPS = 5;
+
+    for (let loop = 0; loop < MAX_LOOPS; loop++) {
+      const result = await callLLM(provider, model, apiKey, messages, TOOLS);
+      totalTokens += result.usage;
+
+      // If LLM returned tool calls, execute them
+      if (result.toolCalls.length > 0) {
+        for (const tc of result.toolCalls) {
+          const execResult = await executeTool(tc, projectId);
+          createdFiles.push(execResult.message);
+
+          // Add tool result to conversation
+          messages.push({
+            role: "assistant",
+            content: `[Used tool: ${tc.name} with args: ${JSON.stringify(tc.arguments)}]`,
+          });
+          messages.push({
+            role: "user",
+            content: `Tool result: ${execResult.message}`,
+          });
+        }
+        continue; // Loop again so LLM can respond to tool results
+      }
+
+      // No more tool calls — return final response
+      const usageTotal = await prisma.tokenUsage.aggregate({
+        _sum: { amount: true },
+        where: { projectId },
+      });
+
+      // Log token usage
+      await prisma.tokenUsage.create({
+        data: {
+          projectId,
+          amount: totalTokens,
+          provider,
+          model,
+          purpose: message.slice(0, 200),
+        },
+      });
+
+      const finalText = result.text +
+        (createdFiles.length > 0
+          ? `\n\n---\n### 📦 已创建的文件\n\n${createdFiles.map((f) => `- ${f}`).join("\n")}\n\n刷新页面后在「产出物」区域下载。`
+          : "");
+
+      return NextResponse.json({
+        text: finalText,
+        tokensUsed: totalTokens,
+        totalUsed: (usageTotal._sum.amount || 0) + totalTokens,
+        remaining: Math.max(0, project.tokenRaised - (usageTotal._sum.amount || 0) - totalTokens),
+        provider,
+        model,
+        mode: "real",
+        filesCreated: createdFiles.length,
+      });
+    }
+
+    // Max loops reached
     return NextResponse.json({
-      text: result.text,
-      tokensUsed: result.tokensUsed,
-      totalUsed,
-      remaining: Math.max(0, project.tokenRaised - totalUsed),
-      provider: activeKey?.provider || project.llmProvider,
-      model: project.llmModel,
-      mode: result.mode,
+      text: `⚠️ Agent 执行步骤过多（${MAX_LOOPS}步），已中断。已创建 ${createdFiles.length} 个文件。`,
+      tokensUsed: totalTokens,
+      mode: "real",
+      filesCreated: createdFiles.length,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Agent error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return NextResponse.json({
+      text: `## ❌ Agent 运行错误\n\n${error.message}\n\n请检查 API Key 是否有效，或稍后重试。`,
+      tokensUsed: 0,
+      mode: "error",
+    }, { status: 200 });
   }
 }
