@@ -47,6 +47,7 @@
     "createFirst": "Create Project",
     "tokenGoal": "Token Goal",
     "tokensRaised": "raised",
+    "created by": "by",
     "status": {
       "DRAFT": "Draft",
       "FUNDING": "Funding",

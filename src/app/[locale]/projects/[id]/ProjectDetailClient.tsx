@@ -14,18 +14,40 @@ export default function ProjectDetailClient({
   categoryName,
   statusLabel,
   progressPct,
+  totalTokensUsed,
+  remainingTokens,
 }: {
   project: ProjectData;
   locale: string;
   categoryName: string;
   statusLabel: string;
   progressPct: number;
+  totalTokensUsed: number;
+  remainingTokens: number;
 }) {
   const t = useTranslations("project");
   const [contributeOpen, setContributeOpen] = useState(false);
   const [amount, setAmount] = useState("");
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // Local state for deliverables — updated dynamically when Agent creates files
+  const [deliverables, setDeliverables] = useState(project.deliverables);
+  const [displayTokensUsed, setDisplayTokensUsed] = useState(totalTokensUsed);
+
+  const handleFilesCreated = async (files: string[]) => {
+    // Re-fetch project data to get updated deliverables and token usage
+    try {
+      const res = await fetch(`/api/projects/${project.id}`);
+      const data = await res.json();
+      if (data.deliverables) {
+        setDeliverables(data.deliverables);
+      }
+      if (data.usages) {
+        const used = data.usages.reduce((sum: number, u: any) => sum + u.amount, 0);
+        setDisplayTokensUsed(used);
+      }
+    } catch {}
+  };
 
   const handleContribute = async () => {
     if (!amount || parseInt(amount) <= 0) return;
@@ -109,6 +131,24 @@ export default function ProjectDetailClient({
             {project._count.contributions} {t("backers")}
           </span>
         </div>
+
+        {/* Token usage breakdown */}
+        {(totalTokensUsed > 0 || project.usages?.length > 0) && (
+          <div className="mt-3 pt-3 border-t border-border-color grid grid-cols-3 gap-3 text-xs">
+            <div>
+              <span className="text-text-dim">已消耗</span>
+              <p className="text-text-warning font-semibold">{formatTokenCount(totalTokensUsed)}</p>
+            </div>
+            <div>
+              <span className="text-text-dim">剩余可用</span>
+              <p className="text-accent font-semibold">{formatTokenCount(Math.max(0, remainingTokens))}</p>
+            </div>
+            <div>
+              <span className="text-text-dim">调用次数</span>
+              <p className="text-text-primary font-semibold">{project.usages?.length || 0}</p>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -144,8 +184,10 @@ export default function ProjectDetailClient({
               model={project.llmModel}
               tokenRaised={project.tokenRaised}
               tokenGoal={project.tokenGoal}
+              tokenUsed={totalTokensUsed}
               projectStatus={project.status}
               locale={locale}
+              onFilesCreated={handleFilesCreated}
             />
           </div>
 
@@ -155,9 +197,9 @@ export default function ProjectDetailClient({
               <span className="text-text-dim">## </span>
               {t("deliverables")}
             </h2>
-            {project.deliverables.length > 0 ? (
+            {deliverables.length > 0 ? (
               <div className="space-y-3">
-                {project.deliverables.map((d: any) => (
+                {deliverables.map((d: any) => (
                   <div
                     key={d.id}
                     className="flex items-center justify-between p-3 border border-border-color rounded"

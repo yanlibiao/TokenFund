@@ -23,6 +23,10 @@ export async function GET(
       deliverables: {
         orderBy: { createdAt: "desc" },
       },
+      usages: {
+        orderBy: { createdAt: "desc" },
+        take: 100,
+      },
       _count: { select: { stars: true, comments: true } },
     },
   });

@@ -47,6 +47,7 @@
     "createFirst": "创建项目",
     "tokenGoal": "Token 目标",
     "tokensRaised": "已筹",
+    "created by": "创建者",
     "status": {
       "DRAFT": "草稿",
       "FUNDING": "筹款中",

@@ -1,379 +1,177 @@
 /**
- * TokenFund AI Agent v2 — E2B Cloud Sandbox
+ * TokenFund Agent — Simple & Reliable
  *
- * Architecture:
- *   User Task → Create E2B Sandbox → Agent Loop (LLM plans + calls tools)
- *   → Execute tools in sandbox (write file, run cmd, install pkg)
- *   → Feed results back to LLM → Iterate until done
- *   → Export deliverables → Kill sandbox → Return to user
+ * Strategy: Ask DeepSeek to write ONE complete Python script.
+ * Upload → Run → If fails, show error → Retry once.
+ * No function calling loops. No open-interpreter. Just code generation.
  */
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { decrypt } from "@/lib/encryption";
 import { createSandbox, type Sandbox } from "@/lib/e2b";
 
-// ── Tool definitions (OpenAI/DeepSeek function calling format) ──
+const SYSTEM = `You are a Python programmer. Write ONE complete, self-contained Python script that accomplishes ALL steps of the user's task.
 
-const TOOLS = [
-  {
-    type: "function" as const,
-    function: {
-      name: "write_file",
-      description:
-        "Write content to a file in the sandbox. Creates parent directories if needed.",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "File path, e.g. /home/user/main.py" },
-          content: { type: "string", description: "Full file content" },
-        },
-        required: ["path", "content"],
-      },
-    },
-  },
-  {
-    type: "function" as const,
-    function: {
-      name: "run_command",
-      description: "Execute a shell command in the sandbox. Returns stdout, stderr, and exit code.",
-      parameters: {
-        type: "object",
-        properties: {
-          command: { type: "string", description: "Shell command to execute" },
-          timeout_ms: { type: "number", description: "Optional timeout in ms (default 60000)" },
-        },
-        required: ["command"],
-      },
-    },
-  },
-  {
-    type: "function" as const,
-    function: {
-      name: "read_file",
-      description: "Read the contents of a file in the sandbox.",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "File path" },
-        },
-        required: ["path"],
-      },
-    },
-  },
-  {
-    type: "function" as const,
-    function: {
-      name: "list_dir",
-      description: "List files and directories at a given path.",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Directory path, e.g. /home/user/" },
-        },
-        required: ["path"],
-      },
-    },
-  },
-  {
-    type: "function" as const,
-    function: {
-      name: "task_done",
-      description:
-        "Call this when the task is complete. Provide a summary and list of output files.",
-      parameters: {
-        type: "object",
-        properties: {
-          summary: { type: "string", description: "Summary of what was accomplished" },
-          output_files: {
-            type: "array",
-            items: { type: "string" },
-            description: "List of file paths that represent the final deliverables",
-          },
-        },
-        required: ["summary", "output_files"],
-      },
-    },
-  },
-];
+CRITICAL RULES:
+- Output ONLY valid Python code, nothing else
+- NO markdown code blocks (\`\`\`), NO explanations — just raw Python
+- Use os.chdir("/home/user") at the top
+- Print progress with print("=== STEP N ===", flush=True)
+- Install packages with subprocess.run([sys.executable,"-m","pip","install","-q",pkg])
+- matplotlib: use matplotlib.use("Agg") before import
+- Word docs: from docx import Document
+- Chrome: use subprocess to install chromium if needed
+- All output files go to /home/user/
+- Verify each file exists with os.path.getsize() and print the size
+- End with print("OK ALL DONE", flush=True)
+- Handle ALL errors with try/except, print traceback on failure
 
-// ── System prompt ──
-
-const SYSTEM_PROMPT = `
-You are an AI Agent running in a Linux sandbox. You have real tools to write files, run commands, and install packages.
-
-YOUR CAPABILITIES:
-- Write any file (code, config, documentation, data)
-- Run shell commands (compile, execute, test, build)
-- Install packages (pip, npm, apt-get)
-- Read files to check output
-- List directories to see your workspace
-
-RULES:
-1. Break tasks into steps: write code → run it → check output → fix errors → retry
-2. Install dependencies before running code (pip install, npm install, etc.)
-3. When code fails, read the error, fix the file, and re-run
-4. Create COMPLETE working projects, not templates
-5. If a command hangs or takes too long, try a different approach
-6. When the task is complete, call task_done with a summary and list of output files
-7. Work in /home/user/ directory
-
-Answer in the user's language. Be concise — focus on DOING, not describing.
-`;
-
-// ── Tool executors ──
-
-async function executeWriteFile(sandbox: Sandbox, args: { path: string; content: string }) {
-  await sandbox.files.write(args.path, args.content);
-  return `File written: ${args.path} (${args.content.length} chars)`;
-}
-
-async function executeRunCommand(sandbox: Sandbox, args: { command: string; timeout_ms?: number }) {
-  const timeout = args.timeout_ms || 60000;
-  const startTime = Date.now();
-
-  try {
-    const result = await sandbox.commands.run(args.command, {
-      timeoutMs: timeout,
-    });
-
-    const elapsed = Date.now() - startTime;
-    const stdout = (result.stdout || "").slice(0, 4000);
-    const stderr = (result.stderr || "").slice(0, 2000);
-    const exitCode = result.exitCode;
-
-    let output = `Exit code: ${exitCode} (${elapsed}ms)\n`;
-    if (stdout) output += `STDOUT:\n${stdout}\n`;
-    if (stderr) output += `STDERR:\n${stderr}\n`;
-    if (!stdout && !stderr) output += "(no output)\n";
-
-    return output;
-  } catch (err: any) {
-    const elapsed = Date.now() - startTime;
-    return `Command failed after ${elapsed}ms: ${err.message}`;
-  }
-}
-
-async function executeReadFile(sandbox: Sandbox, args: { path: string }) {
-  try {
-    const content = await sandbox.files.read(args.path, { format: "text" });
-    return content.slice(0, 5000) || "(empty file)";
-  } catch (err: any) {
-    return `Error reading ${args.path}: ${err.message}`;
-  }
-}
-
-async function executeListDir(sandbox: Sandbox, args: { path: string }) {
-  try {
-    const entries = await sandbox.files.list(args.path);
-    return entries.map((e: any) => `${e.isDir ? "📁" : "📄"} ${e.name}`).join("\n") || "(empty)";
-  } catch (err: any) {
-    return `Error listing ${args.path}: ${err.message}`;
-  }
-}
-
-// ── Main POST handler ──
+START YOUR RESPONSE WITH: import subprocess, sys, os`;
 
 export async function POST(request: NextRequest) {
   let sandbox: Sandbox | null = null;
+  const stream = new ReadableStream({
+    async start(ctrl) {
+      const S = (d: any) => { try { ctrl.enqueue(new TextEncoder().encode(JSON.stringify(d)+"\n")); } catch {} };
+      try {
+        const { projectId, message } = await request.json();
+        if (!projectId || !message) { S({error:"Bad request"}); ctrl.close(); return; }
 
-  try {
-    const { projectId, message } = await request.json();
-    if (!projectId || !message) {
-      return NextResponse.json({ error: "Missing projectId or message" }, { status: 400 });
-    }
+        const project = await prisma.project.findUnique({ where: { id: projectId } });
+        if (!project) { S({error:"Project not found"}); ctrl.close(); return; }
 
-    const project = await prisma.project.findUnique({ where: { id: projectId } });
-    if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
+        const activeKey = await prisma.apiKey.findFirst({ where: { isActive: true }, orderBy: { createdAt: "desc" } });
+        if (!activeKey) { S({error:"No API key"}); ctrl.close(); return; }
+        const apiKey = decrypt(activeKey.encryptedKey);
 
-    // Find API key
-    const activeKey = await prisma.apiKey.findFirst({
-      where: { isActive: true },
-      orderBy: { createdAt: "desc" },
-    });
+        // ── Sandbox ──
+        S({log:"🚀 启动..."});
+        sandbox = await createSandbox();
+        S({log:"✅ " + sandbox.sandboxId});
 
-    if (!activeKey) {
-      return NextResponse.json({
-        text: "No API key configured. Add one in Dashboard.",
-        mode: "no-key", logs: [],
-      });
-    }
+        // ── Generate script ──
+        S({log:"🧠 生成执行脚本..."});
 
-    const apiKey = decrypt(activeKey.encryptedKey);
+        const genRes = await fetch("https://api.deepseek.com/v1/chat/completions", {
+          method:"POST",
+          headers:{"Content-Type":"application/json",Authorization:`Bearer ${apiKey}`},
+          body:JSON.stringify({
+            model:"deepseek-chat",
+            messages:[
+              {role:"system",content:SYSTEM},
+              {role:"user",content:message}
+            ],
+            max_tokens:8192,
+            temperature:0.1,
+          }),
+          signal:AbortSignal.timeout(120000),
+        });
 
-    // ── Create sandbox ──
-    sandbox = await createSandbox();
-    const createdLogs: string[] = [
-      `🚀 Sandbox created: ${sandbox.sandboxId}`,
-      `📋 Task: ${message}`,
-      "",
-    ];
-
-    // ── Agent loop ──
-    const messages: any[] = [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: message },
-    ];
-
-    let totalTokens = 0;
-    let taskDone = false;
-    let finalSummary = "";
-    let outputFiles: string[] = [];
-    const MAX_TURNS = 15;
-
-    for (let turn = 0; turn < MAX_TURNS && !taskDone; turn++) {
-      const llmRes = await fetch("https://api.deepseek.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: "deepseek-chat",
-          messages,
-          tools: TOOLS,
-          tool_choice: "auto",
-          max_tokens: 4096,
-        }),
-      });
-
-      if (!llmRes.ok) {
-        const err = await llmRes.text();
-        throw new Error(`DeepSeek ${llmRes.status}: ${err.slice(0, 300)}`);
-      }
-
-      const llmData = await llmRes.json();
-      const choice = llmData.choices?.[0];
-      const llmMsg = choice?.message;
-      totalTokens += (llmData.usage?.prompt_tokens || 0) + (llmData.usage?.completion_tokens || 0);
-
-      // If LLM just talks without tool calls, push message and continue
-      if (!llmMsg?.tool_calls || llmMsg.tool_calls.length === 0) {
-        if (llmMsg?.content) {
-          createdLogs.push(`💬 [Turn ${turn + 1}] ${llmMsg.content.slice(0, 200)}`);
-          messages.push({ role: "assistant", content: llmMsg.content });
+        if (!genRes.ok) { S({log:`❌ API ${genRes.status}`}); ctrl.close(); return; }
+        const genData = await genRes.json();
+        let script = genData.choices?.[0]?.message?.content||"";
+        // Clean markdown if present
+        if (script.startsWith("```")) {
+          script = script.replace(/```python\n?/g,"").replace(/```\n?/g,"").trim();
         }
-        continue;
-      }
+        S({log:`📝 脚本 ${script.length} 字符`});
 
-      // Process each tool call
-      messages.push(llmMsg); // Push assistant message with tool_calls
+        // ── Execute ──
+        S({log:"▶️ 执行..."});
+        await sandbox.files.write("/home/user/main.py", script);
 
-      for (const tc of llmMsg.tool_calls) {
-        const fnName = tc.function.name;
-        const fnArgs = JSON.parse(tc.function.arguments);
-        const callId = tc.id;
-
-        createdLogs.push(
-          `🔧 [Turn ${turn + 1}] ${fnName}(${JSON.stringify(fnArgs).slice(0, 100)}${JSON.stringify(fnArgs).length > 100 ? "..." : ""})`
+        let output = "";
+        const handle = await sandbox.commands.run(
+          "cd /home/user && python3 -u main.py",
+          { background: true, timeoutMs: 300000 }
         );
 
-        let result: string;
-        try {
-          switch (fnName) {
-            case "write_file":
-              result = await executeWriteFile(sandbox, fnArgs);
-              break;
-            case "run_command":
-              result = await executeRunCommand(sandbox, fnArgs);
-              break;
-            case "read_file":
-              result = await executeReadFile(sandbox, fnArgs);
-              break;
-            case "list_dir":
-              result = await executeListDir(sandbox, fnArgs);
-              break;
-            case "task_done":
-              finalSummary = fnArgs.summary;
-              outputFiles = fnArgs.output_files || [];
-              taskDone = true;
-              result = "Task marked as done.";
-              break;
-            default:
-              result = `Unknown tool: ${fnName}`;
-          }
-        } catch (execErr: any) {
-          result = `Tool execution error: ${execErr.message}`;
-        }
-
-        createdLogs.push(result.slice(0, 300));
-
-        // Add tool result message
-        messages.push({
-          role: "tool",
-          tool_call_id: callId,
-          content: result,
-        });
-      }
-
-      if (taskDone) break;
-    }
-
-    if (!taskDone) {
-      createdLogs.push(`⚠️ Reached max turns (${MAX_TURNS}).`);
-    }
-
-    // ── Export deliverables to project ──
-    const createdFiles: string[] = [];
-    for (const filePath of outputFiles) {
-      try {
-        const content = await sandbox.files.read(filePath, { format: "text" });
-        const name = filePath.split("/").pop() || "output";
-
-        await prisma.deliverable.create({
-          data: {
-            projectId,
-            title: name,
-            description: "Generated by AI Agent in E2B sandbox",
-            fileUrl: "data:text/plain;charset=utf-8," + encodeURIComponent(content),
-            version: "1.0",
+        let buf = "";
+        const conn = await sandbox.commands.connect(handle.pid, {
+          onStdout: (d:string) => {
+            buf += d;
+            const lines = buf.split("\n"); buf = lines.pop()||"";
+            for (const l of lines) { const t = l.trim(); if (t) { S({log:t.slice(0,400)}); output += t+"\n"; } }
+          },
+          onStderr: (d:string) => {
+            const t = d.trim();
+            if (t && !t.includes("[IPKernel")) { S({log:"⚠️ "+t.slice(0,300)}); output += "ERR: "+t+"\n"; }
           },
         });
-        createdFiles.push(name);
-        createdLogs.push(`📦 Saved deliverable: ${name}`);
-      } catch (e) {
-        createdLogs.push(`⚠️ Could not export ${filePath}`);
-      }
+        const runResult = await conn.wait();
+        if (buf.trim()) { S({log:buf.trim().slice(0,400)}); output += buf; }
+
+        let totalTokens = (genData.usage?.prompt_tokens||0)+(genData.usage?.completion_tokens||0);
+
+        // ── Retry on failure ──
+        if (runResult.exitCode !== 0) {
+          S({log:`⚠️ 脚本失败 (exit ${runResult.exitCode})，让 AI 修复...`});
+
+          const fixRes = await fetch("https://api.deepseek.com/v1/chat/completions", {
+            method:"POST",
+            headers:{"Content-Type":"application/json",Authorization:`Bearer ${apiKey}`},
+            body:JSON.stringify({
+              model:"deepseek-chat",
+              messages:[
+                {role:"system",content:SYSTEM},
+                {role:"user",content:message},
+                {role:"assistant",content:script.slice(0,6000)},
+                {role:"user",content:`This script failed with exit code ${runResult.exitCode}.\n\nOutput:\n${output.slice(-4000)}\n\nPlease fix the script. Output ONLY the corrected Python code.`}
+              ],
+              max_tokens:8192,
+              temperature:0.1,
+            }),
+            signal:AbortSignal.timeout(120000),
+          });
+
+          if (fixRes.ok) {
+            const fixData = await fixRes.json();
+            let fixScript = fixData.choices?.[0]?.message?.content||"";
+            if (fixScript.startsWith("```")) fixScript = fixScript.replace(/```python\n?/g,"").replace(/```\n?/g,"").trim();
+            totalTokens += (fixData.usage?.prompt_tokens||0)+(fixData.usage?.completion_tokens||0);
+
+            S({log:"🔄 运行修复版..."});
+            await sandbox.files.write("/home/user/main.py", fixScript);
+            const h2 = await sandbox.commands.run("cd /home/user && python3 -u main.py", { background: true, timeoutMs: 300000 });
+            let b2 = "";
+            const c2 = await sandbox.commands.connect(h2.pid, {
+              onStdout: (d:string) => { b2+=d; const ls=b2.split("\n");b2=ls.pop()||""; for(const l of ls){const t=l.trim();if(t)S({log:t.slice(0,400)});} },
+              onStderr: (d:string) => { const t=d.trim();if(t&&!t.includes("[IPKernel"))S({log:"⚠️ "+t.slice(0,300)}); },
+            });
+            const r2 = await c2.wait();
+            if (b2.trim()) S({log:b2.trim().slice(0,400)});
+            if (r2.exitCode !== 0) S({log:`⚠️ 修复后仍失败`});
+          }
+        }
+
+        // ── Export ──
+        S({log:"\n📦 导出..."});
+        const files = await sandbox.files.list("/home/user");
+        const skip = new Set([".bashrc",".bash_logout",".profile",".cache",".config",".bash_history",".python_history","main.py"]);
+        const exported: string[] = [];
+
+        for (const f of files) {
+          if (skip.has(f.name)||f.type!=="file") continue;
+          try {
+            const fp="/home/user/"+f.name;
+            const isBin=/\.(docx|pdf|xlsx|pptx|odt|png|zip|jpg|gif)$/i.test(f.name);
+            let url:string;
+            if(isBin){const b=await sandbox.files.read(fp,{format:"bytes"});url=`data:application/octet-stream;base64,${Buffer.from(b).toString("base64")}`;}
+            else{const c=await sandbox.files.read(fp,{format:"text"});const e=(f.name.split(".").pop()||"txt").toLowerCase();const mm:Record<string,string>={html:"text/html",md:"text/markdown",json:"application/json",csv:"text/csv"};url=`data:${mm[e]||"text/plain"};charset=utf-8,${encodeURIComponent(c)}`;}
+            await prisma.deliverable.create({data:{projectId,title:f.name,description:"AI Agent",fileUrl:url,version:"1.0"}});
+            exported.push(f.name);S({log:`📦 ${f.name}`});
+          }catch{}
+        }
+        await prisma.tokenUsage.create({data:{projectId,amount:totalTokens||1,provider:activeKey.provider,model:"deepseek-chat",purpose:message.slice(0,200)}});
+        await sandbox.kill(); sandbox=null;
+        S({done:true,filesCreated:exported.length,files:exported,tokensUsed:totalTokens});
+        ctrl.close();
+      } catch(e:any){S({log:`❌ ${e.message}`,done:true});ctrl.close();}
+      finally{if(sandbox)try{await sandbox.kill();}catch{}}
     }
-
-    // ── Log usage ──
-    await prisma.tokenUsage.create({
-      data: {
-        projectId,
-        amount: totalTokens || 1,
-        provider: activeKey.provider,
-        model: "deepseek-chat",
-        purpose: message.slice(0, 200),
-      },
-    });
-
-    // ── Kill sandbox ──
-    await sandbox.kill();
-    sandbox = null;
-
-    return NextResponse.json({
-      text: finalSummary || (createdFiles.length > 0
-        ? `Task completed. ${createdFiles.length} file(s) created.`
-        : "Agent finished. Check logs for details."),
-      logs: createdLogs,
-      tokensUsed: totalTokens,
-      mode: "e2b-sandbox",
-      filesCreated: createdFiles.length,
-      files: createdFiles,
-    });
-  } catch (error: any) {
-    console.error("Agent error:", error);
-    return NextResponse.json({
-      text: `Agent error: ${error.message}`,
-      logs: [`❌ ${error.message}`],
-      tokensUsed: 0,
-      mode: "error",
-      filesCreated: 0,
-    });
-  } finally {
-    // Safety: always kill sandbox
-    if (sandbox) {
-      try { await sandbox.kill(); } catch {}
-    }
-  }
+  });
+  return new Response(stream,{headers:{"Content-Type":"text/plain; charset=utf-8"}});
 }
