@@ -64,10 +64,10 @@ export async function POST(request: NextRequest) {
               {role:"system",content:SYSTEM},
               {role:"user",content:message}
             ],
-            max_tokens:8192,
-            temperature:0.1,
+            max_tokens:16384,
+            temperature:0,
           }),
-          signal:AbortSignal.timeout(120000),
+          signal:AbortSignal.timeout(180000),
         });
 
         if (!genRes.ok) { S({log:`❌ API ${genRes.status}`}); ctrl.close(); return; }
@@ -121,7 +121,7 @@ export async function POST(request: NextRequest) {
                 {role:"assistant",content:script.slice(0,6000)},
                 {role:"user",content:`This script failed with exit code ${runResult.exitCode}.\n\nOutput:\n${output.slice(-4000)}\n\nPlease fix the script. Output ONLY the corrected Python code.`}
               ],
-              max_tokens:8192,
+              max_tokens:16384,
               temperature:0.1,
             }),
             signal:AbortSignal.timeout(120000),
@@ -157,10 +157,24 @@ export async function POST(request: NextRequest) {
           if (skip.has(f.name)||f.type!=="file") continue;
           try {
             const fp="/home/user/"+f.name;
-            const isBin=/\.(docx|pdf|xlsx|pptx|odt|png|zip|jpg|gif)$/i.test(f.name);
-            let url:string;
-            if(isBin){const b=await sandbox.files.read(fp,{format:"bytes"});url=`data:application/octet-stream;base64,${Buffer.from(b).toString("base64")}`;}
-            else{const c=await sandbox.files.read(fp,{format:"text"});const e=(f.name.split(".").pop()||"txt").toLowerCase();const mm:Record<string,string>={html:"text/html",md:"text/markdown",json:"application/json",csv:"text/csv"};url=`data:${mm[e]||"text/plain"};charset=utf-8,${encodeURIComponent(c)}`;}
+            // Always read as bytes to avoid encoding corruption
+            const bytes = await sandbox.files.read(fp, { format: "bytes" });
+            const b64 = Buffer.from(bytes).toString("base64");
+
+            // Determine correct MIME type
+            const ext = (f.name.split(".").pop() || "").toLowerCase();
+            const mimeMap: Record<string, string> = {
+              png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+              gif: "image/gif", svg: "image/svg+xml",
+              pdf: "application/pdf",
+              docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+              zip: "application/zip", gz: "application/gzip",
+            };
+            const mime = mimeMap[ext] || "application/octet-stream";
+            const url = `data:${mime};base64,${b64}`;
+
             await prisma.deliverable.create({data:{projectId,title:f.name,description:"AI Agent",fileUrl:url,version:"1.0"}});
             exported.push(f.name);S({log:`📦 ${f.name}`});
           }catch{}

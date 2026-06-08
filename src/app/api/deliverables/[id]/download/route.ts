@@ -1,6 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
+const MIME_TO_EXT: Record<string, string> = {
+  "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif",
+  "application/pdf": "pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+  "text/markdown": "md", "text/html": "html", "text/plain": "txt",
+  "application/json": "json", "text/csv": "csv",
+};
+
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -12,58 +22,44 @@ export async function GET(
   prisma.deliverable.update({ where: { id }, data: { downloadCount: { increment: 1 } } }).catch(() => {});
 
   const url = (d.fileUrl || "").trim();
-  if (!url) return NextResponse.json({ error: "Empty" }, { status: 400 });
-
-  // HTTP redirect
+  if (!url) return new NextResponse("Empty", { status: 400 });
   if (url.startsWith("http")) return NextResponse.redirect(url);
 
+  // data: URL
   if (url.startsWith("data:")) {
-    const afterData = url.slice(5);
-    const commaIdx = afterData.indexOf(",");
-    if (commaIdx < 0) return NextResponse.json({ error: "Bad data URL" }, { status: 400 });
+    const after = url.slice(5);
+    const comma = after.indexOf(",");
+    if (comma < 0) return NextResponse.json({ error: "Bad URL" }, { status: 400 });
 
-    const header = afterData.slice(0, commaIdx);
-    const rawContent = afterData.slice(commaIdx + 1);
+    const header = after.slice(0, comma);
+    const content = after.slice(comma + 1);
     const isBase64 = header.toLowerCase().endsWith(";base64");
     const mime = (isBase64 ? header.slice(0, -7) : header).split(";")[0] || "text/plain";
 
-    const isBinary =
-      mime.includes("officedocument") ||
-      mime.includes("application/vnd") ||
-      mime.includes("application/zip") ||
-      mime.includes("image/") ||
-      mime.includes("audio/") ||
-      mime.includes("video/");
-
-    const ext = isBinary
-      ? "docx"
-      : { "text/markdown": "md", "text/html": "html", "text/plain": "txt", "application/json": "json", "text/csv": "csv" }[mime] || "txt";
-
-    let body: string | Uint8Array;
-    if (isBinary && isBase64) {
-      // Binary: serve as-is via base64 → buffer
-      body = Uint8Array.from(Buffer.from(rawContent, "base64"));
-    } else if (isBinary) {
-      body = Uint8Array.from(Buffer.from(rawContent, "ascii"));
-    } else if (isBase64) {
-      body = Buffer.from(rawContent, "base64").toString("utf-8");
+    let body: string;
+    if (isBase64) {
+      const binary = Buffer.from(content, "base64");
+      // Use raw Response for binary — NextResponse doesn't like Uint8Array
+      return new Response(binary, {
+        status: 200,
+        headers: {
+          "Content-Type": mime,
+          "Content-Disposition": `attachment; filename="${encodeURIComponent(d.title || "file")}"`,
+          "Content-Length": String(binary.length),
+          "Cache-Control": "public, max-age=3600",
+        },
+      });
     } else {
-      body = decodeURIComponent(rawContent);
+      // Text data — decode URI component
+      body = decodeURIComponent(content);
     }
 
-    const headers: Record<string, string> = {
-      "Content-Type": mime,
-      "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(d.title || `file.${ext}`)}`,
-      "Cache-Control": "public, max-age=3600",
-    };
-
-    if (isBinary) {
-      headers["Content-Length"] = String((body as Uint8Array).length);
-    }
-
-    return new NextResponse(body as any, {
-      status: 200,
-      headers: headers as any,
+    const ext = MIME_TO_EXT[mime] || "txt";
+    return new NextResponse(body, {
+      headers: {
+        "Content-Type": `${mime}; charset=utf-8`,
+        "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(d.title || "file")}.${ext}`,
+      },
     });
   }
 
