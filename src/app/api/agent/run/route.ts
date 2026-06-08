@@ -1,235 +1,182 @@
 /**
- * Real AI Agent with Function Calling
+ * TokenFund AI Agent v2 — E2B Cloud Sandbox
  *
- * DeepSeek supports OpenAI-compatible tool/function calling.
- * When the LLM decides to create a file, the server actually executes
- * the tool — no fragile text parsing.
+ * Architecture:
+ *   User Task → Create E2B Sandbox → Agent Loop (LLM plans + calls tools)
+ *   → Execute tools in sandbox (write file, run cmd, install pkg)
+ *   → Feed results back to LLM → Iterate until done
+ *   → Export deliverables → Kill sandbox → Return to user
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { decrypt } from "@/lib/encryption";
-import * as Docx from "docx";
+import { createSandbox, type Sandbox } from "@/lib/e2b";
 
-// ── Tool definitions (OpenAI/DeepSeek compatible) ──
+// ── Tool definitions (OpenAI/DeepSeek function calling format) ──
 
 const TOOLS = [
   {
     type: "function" as const,
     function: {
-      name: "create_document",
+      name: "write_file",
       description:
-        "Generate a Word document (.docx) or other rich text document. " +
-        "Use this when the user asks for a Word document, report, proposal, plan, contract, or any formatted document. " +
-        "Each section can have a heading and body text. Supports headings, paragraphs, and bullet lists.",
+        "Write content to a file in the sandbox. Creates parent directories if needed.",
       parameters: {
         type: "object",
         properties: {
-          title: {
-            type: "string",
-            description: "Document title / file name (without extension)",
-          },
-          sections: {
+          path: { type: "string", description: "File path, e.g. /home/user/main.py" },
+          content: { type: "string", description: "Full file content" },
+        },
+        required: ["path", "content"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "run_command",
+      description: "Execute a shell command in the sandbox. Returns stdout, stderr, and exit code.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", description: "Shell command to execute" },
+          timeout_ms: { type: "number", description: "Optional timeout in ms (default 60000)" },
+        },
+        required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "read_file",
+      description: "Read the contents of a file in the sandbox.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "File path" },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "list_dir",
+      description: "List files and directories at a given path.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Directory path, e.g. /home/user/" },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "task_done",
+      description:
+        "Call this when the task is complete. Provide a summary and list of output files.",
+      parameters: {
+        type: "object",
+        properties: {
+          summary: { type: "string", description: "Summary of what was accomplished" },
+          output_files: {
             type: "array",
-            description: "Document sections",
-            items: {
-              type: "object",
-              properties: {
-                heading: {
-                  type: "string",
-                  description: "Section heading (heading level is auto-detected)",
-                },
-                body: {
-                  type: "string",
-                  description: "Full body text for this section. Supports newlines.",
-                },
-                list: {
-                  type: "array",
-                  items: { type: "string" },
-                  description: "Optional bullet list items for this section",
-                },
-              },
-              required: ["heading", "body"],
-            },
+            items: { type: "string" },
+            description: "List of file paths that represent the final deliverables",
           },
         },
-        required: ["title", "sections"],
-      },
-    },
-  },
-  {
-    type: "function" as const,
-    function: {
-      name: "create_code_file",
-      description:
-        "Create a source code file. Use this for scripts, components, or any programming code.",
-      parameters: {
-        type: "object",
-        properties: {
-          filename: {
-            type: "string",
-            description: "File name with extension (e.g. 'main.py', 'App.tsx')",
-          },
-          content: {
-            type: "string",
-            description: "The complete source code",
-          },
-          description: {
-            type: "string",
-            description: "Brief description of what the code does",
-          },
-        },
-        required: ["filename", "content", "description"],
-      },
-    },
-  },
-  {
-    type: "function" as const,
-    function: {
-      name: "create_text_file",
-      description:
-        "Create a markdown, HTML, or plain text file. Use this for documentation, READMEs, articles, or formatted text output.",
-      parameters: {
-        type: "object",
-        properties: {
-          filename: {
-            type: "string",
-            description: "File name with extension (.md, .html, .txt, .json, .csv)",
-          },
-          content: {
-            type: "string",
-            description: "Full file content",
-          },
-          description: {
-            type: "string",
-            description: "Brief description",
-          },
-        },
-        required: ["filename", "content", "description"],
+        required: ["summary", "output_files"],
       },
     },
   },
 ];
 
-// ── Tool executors (run on server, produce real files) ──
+// ── System prompt ──
 
-async function executeCreateDocument(
-  args: { title: string; sections: Array<{ heading: string; body: string; list?: string[] }> },
-  projectId: string
-) {
-  const children: Docx.Paragraph[] = [];
+const SYSTEM_PROMPT = `
+You are an AI Agent running in a Linux sandbox. You have real tools to write files, run commands, and install packages.
 
-  // Title page heading
-  children.push(
-    new Docx.Paragraph({
-      text: args.title,
-      heading: Docx.HeadingLevel.TITLE,
-      spacing: { after: 400 },
-    })
-  );
+YOUR CAPABILITIES:
+- Write any file (code, config, documentation, data)
+- Run shell commands (compile, execute, test, build)
+- Install packages (pip, npm, apt-get)
+- Read files to check output
+- List directories to see your workspace
 
-  for (const sec of args.sections) {
-    // Section heading
-    children.push(
-      new Docx.Paragraph({
-        text: sec.heading,
-        heading: Docx.HeadingLevel.HEADING_1,
-        spacing: { before: 300, after: 150 },
-      })
-    );
+RULES:
+1. Break tasks into steps: write code → run it → check output → fix errors → retry
+2. Install dependencies before running code (pip install, npm install, etc.)
+3. When code fails, read the error, fix the file, and re-run
+4. Create COMPLETE working projects, not templates
+5. If a command hangs or takes too long, try a different approach
+6. When the task is complete, call task_done with a summary and list of output files
+7. Work in /home/user/ directory
 
-    // Section body
-    const paragraphs = sec.body.split("\n").filter((p) => p.trim());
-    for (const p of paragraphs) {
-      children.push(
-        new Docx.Paragraph({
-          text: p.trim(),
-          spacing: { after: 120 },
-        })
-      );
-    }
+Answer in the user's language. Be concise — focus on DOING, not describing.
+`;
 
-    // Bullet list
-    if (sec.list && sec.list.length > 0) {
-      for (const item of sec.list) {
-        children.push(
-          new Docx.Paragraph({
-            text: item,
-            bullet: { level: 0 },
-            spacing: { after: 80 },
-          })
-        );
-      }
-    }
+// ── Tool executors ──
+
+async function executeWriteFile(sandbox: Sandbox, args: { path: string; content: string }) {
+  await sandbox.files.write(args.path, args.content);
+  return `File written: ${args.path} (${args.content.length} chars)`;
+}
+
+async function executeRunCommand(sandbox: Sandbox, args: { command: string; timeout_ms?: number }) {
+  const timeout = args.timeout_ms || 60000;
+  const startTime = Date.now();
+
+  try {
+    const result = await sandbox.commands.run(args.command, {
+      timeoutMs: timeout,
+    });
+
+    const elapsed = Date.now() - startTime;
+    const stdout = (result.stdout || "").slice(0, 4000);
+    const stderr = (result.stderr || "").slice(0, 2000);
+    const exitCode = result.exitCode;
+
+    let output = `Exit code: ${exitCode} (${elapsed}ms)\n`;
+    if (stdout) output += `STDOUT:\n${stdout}\n`;
+    if (stderr) output += `STDERR:\n${stderr}\n`;
+    if (!stdout && !stderr) output += "(no output)\n";
+
+    return output;
+  } catch (err: any) {
+    const elapsed = Date.now() - startTime;
+    return `Command failed after ${elapsed}ms: ${err.message}`;
   }
-
-  const doc = new Docx.Document({
-    sections: [{ properties: {}, children }],
-  });
-
-  const buffer = await Docx.Packer.toBuffer(doc);
-  const base64 = buffer.toString("base64");
-
-  const deliverable = await prisma.deliverable.create({
-    data: {
-      projectId,
-      title: args.title + ".docx",
-      description: "Word document generated by AI Agent",
-      fileUrl: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64," + base64,
-      fileSize: buffer.length,
-      version: "1.0",
-    },
-  });
-
-  return {
-    id: deliverable.id,
-    title: deliverable.title,
-    size: buffer.length,
-  };
 }
 
-async function executeCreateCodeFile(
-  args: { filename: string; content: string; description: string },
-  projectId: string
-) {
-  const deliverable = await prisma.deliverable.create({
-    data: {
-      projectId,
-      title: args.filename,
-      description: args.description,
-      fileUrl: "data:text/plain;charset=utf-8," + encodeURIComponent(args.content),
-      version: "1.0",
-    },
-  });
-  return { id: deliverable.id, title: deliverable.title, size: Buffer.byteLength(args.content) };
+async function executeReadFile(sandbox: Sandbox, args: { path: string }) {
+  try {
+    const content = await sandbox.files.read(args.path, { format: "text" });
+    return content.slice(0, 5000) || "(empty file)";
+  } catch (err: any) {
+    return `Error reading ${args.path}: ${err.message}`;
+  }
 }
 
-async function executeCreateTextFile(
-  args: { filename: string; content: string; description: string },
-  projectId: string
-) {
-  const ext = (args.filename.split(".").pop() || "md").toLowerCase();
-  const mimeMap: Record<string, string> = {
-    md: "text/markdown", html: "text/html", txt: "text/plain",
-    json: "application/json", csv: "text/csv",
-  };
-  const mime = mimeMap[ext] || "text/plain";
-
-  const deliverable = await prisma.deliverable.create({
-    data: {
-      projectId,
-      title: args.filename,
-      description: args.description,
-      fileUrl: `data:${mime};charset=utf-8,${encodeURIComponent(args.content)}`,
-      version: "1.0",
-    },
-  });
-  return { id: deliverable.id, title: deliverable.title, size: Buffer.byteLength(args.content) };
+async function executeListDir(sandbox: Sandbox, args: { path: string }) {
+  try {
+    const entries = await sandbox.files.list(args.path);
+    return entries.map((e: any) => `${e.isDir ? "📁" : "📄"} ${e.name}`).join("\n") || "(empty)";
+  } catch (err: any) {
+    return `Error listing ${args.path}: ${err.message}`;
+  }
 }
 
-// ── POST handler ──
+// ── Main POST handler ──
 
 export async function POST(request: NextRequest) {
+  let sandbox: Sandbox | null = null;
+
   try {
     const { projectId, message } = await request.json();
     if (!projectId || !message) {
@@ -239,7 +186,7 @@ export async function POST(request: NextRequest) {
     const project = await prisma.project.findUnique({ where: { id: projectId } });
     if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
 
-    // Find active API key
+    // Find API key
     const activeKey = await prisma.apiKey.findFirst({
       where: { isActive: true },
       orderBy: { createdAt: "desc" },
@@ -247,38 +194,34 @@ export async function POST(request: NextRequest) {
 
     if (!activeKey) {
       return NextResponse.json({
-        text: "No API key. Add one in Dashboard → API Keys.",
-        tokensUsed: 0, mode: "no-key", filesCreated: 0,
+        text: "No API key configured. Add one in Dashboard.",
+        mode: "no-key", logs: [],
       });
     }
 
     const apiKey = decrypt(activeKey.encryptedKey);
 
-    const systemPrompt =
-      "你是 TokenFund AI Agent。用户的项目：\n" +
-      `- 项目名: ${project.title}\n` +
-      `- 简介: ${project.summary}\n\n` +
-      "你有以下工具可用：\n" +
-      "1. create_document — 生成 Word (.docx) 文档，用于报告、计划书、合同、方案等\n" +
-      "2. create_code_file — 创建代码文件\n" +
-      "3. create_text_file — 创建 Markdown/HTML/文本文件\n\n" +
-      "规则：\n" +
-      "- 用户要Word文档时必须调用 create_document\n" +
-      "- 文档内容要完整、详细、专业。每个 section 的 body 要充实，不少于 100 字\n" +
-      "- 先创建文件，再简短回复用户\n" +
-      "- 用中文回复";
+    // ── Create sandbox ──
+    sandbox = await createSandbox();
+    const createdLogs: string[] = [
+      `🚀 Sandbox created: ${sandbox.sandboxId}`,
+      `📋 Task: ${message}`,
+      "",
+    ];
 
-    // Agent loop — allow up to 3 turns
-    const messages: Array<{ role: string; content: string; tool_calls?: any[]; tool_call_id?: string }> = [
-      { role: "system", content: systemPrompt },
+    // ── Agent loop ──
+    const messages: any[] = [
+      { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: message },
     ];
 
     let totalTokens = 0;
-    const createdFiles: string[] = [];
-    let finalText = "";
+    let taskDone = false;
+    let finalSummary = "";
+    let outputFiles: string[] = [];
+    const MAX_TURNS = 15;
 
-    for (let turn = 0; turn < 3; turn++) {
+    for (let turn = 0; turn < MAX_TURNS && !taskDone; turn++) {
       const llmRes = await fetch("https://api.deepseek.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -289,7 +232,7 @@ export async function POST(request: NextRequest) {
           model: "deepseek-chat",
           messages,
           tools: TOOLS,
-          tool_choice: turn === 0 ? "auto" : "none",
+          tool_choice: "auto",
           max_tokens: 4096,
         }),
       });
@@ -302,70 +245,98 @@ export async function POST(request: NextRequest) {
       const llmData = await llmRes.json();
       const choice = llmData.choices?.[0];
       const llmMsg = choice?.message;
-
       totalTokens += (llmData.usage?.prompt_tokens || 0) + (llmData.usage?.completion_tokens || 0);
 
-      // If LLM wants to call tools, execute them
-      if (llmMsg?.tool_calls && llmMsg.tool_calls.length > 0) {
-        // Record LLM's tool_call message
-        messages.push(llmMsg);
-
-        for (const tc of llmMsg.tool_calls) {
-          const fnName = tc.function.name;
-          const fnArgs = JSON.parse(tc.function.arguments);
-
-          let toolResult: string;
-          try {
-            if (fnName === "create_document") {
-              const r = await executeCreateDocument(fnArgs, projectId);
-              toolResult = `✅ Word文档已生成: ${r.title} (${(r.size / 1024).toFixed(1)}KB)`;
-              createdFiles.push(r.title);
-            } else if (fnName === "create_code_file") {
-              const r = await executeCreateCodeFile(fnArgs, projectId);
-              toolResult = `✅ 代码文件已创建: ${r.title}`;
-              createdFiles.push(r.title);
-            } else if (fnName === "create_text_file") {
-              const r = await executeCreateTextFile(fnArgs, projectId);
-              toolResult = `✅ 文本文件已创建: ${r.title}`;
-              createdFiles.push(r.title);
-            } else {
-              toolResult = `Unknown tool: ${fnName}`;
-            }
-          } catch (execErr: any) {
-            toolResult = `工具执行失败: ${execErr.message}`;
-          }
-
-          // Add tool result
-          messages.push({
-            role: "tool",
-            tool_call_id: tc.id,
-            content: toolResult,
-          });
+      // If LLM just talks without tool calls, push message and continue
+      if (!llmMsg?.tool_calls || llmMsg.tool_calls.length === 0) {
+        if (llmMsg?.content) {
+          createdLogs.push(`💬 [Turn ${turn + 1}] ${llmMsg.content.slice(0, 200)}`);
+          messages.push({ role: "assistant", content: llmMsg.content });
         }
-        // Continue loop to let LLM respond to tool output
         continue;
       }
 
-      // No tool calls — this is the final response
-      finalText = llmMsg?.content || "";
-      break;
+      // Process each tool call
+      messages.push(llmMsg); // Push assistant message with tool_calls
+
+      for (const tc of llmMsg.tool_calls) {
+        const fnName = tc.function.name;
+        const fnArgs = JSON.parse(tc.function.arguments);
+        const callId = tc.id;
+
+        createdLogs.push(
+          `🔧 [Turn ${turn + 1}] ${fnName}(${JSON.stringify(fnArgs).slice(0, 100)}${JSON.stringify(fnArgs).length > 100 ? "..." : ""})`
+        );
+
+        let result: string;
+        try {
+          switch (fnName) {
+            case "write_file":
+              result = await executeWriteFile(sandbox, fnArgs);
+              break;
+            case "run_command":
+              result = await executeRunCommand(sandbox, fnArgs);
+              break;
+            case "read_file":
+              result = await executeReadFile(sandbox, fnArgs);
+              break;
+            case "list_dir":
+              result = await executeListDir(sandbox, fnArgs);
+              break;
+            case "task_done":
+              finalSummary = fnArgs.summary;
+              outputFiles = fnArgs.output_files || [];
+              taskDone = true;
+              result = "Task marked as done.";
+              break;
+            default:
+              result = `Unknown tool: ${fnName}`;
+          }
+        } catch (execErr: any) {
+          result = `Tool execution error: ${execErr.message}`;
+        }
+
+        createdLogs.push(result.slice(0, 300));
+
+        // Add tool result message
+        messages.push({
+          role: "tool",
+          tool_call_id: callId,
+          content: result,
+        });
+      }
+
+      if (taskDone) break;
     }
 
-    // Fallback: if no files created despite LLM being asked
-    if (createdFiles.length === 0 && finalText) {
-      const d = await prisma.deliverable.create({
-        data: {
-          projectId,
-          title: "Agent-Response.md",
-          description: "AI Agent response",
-          fileUrl: "data:text/markdown;charset=utf-8," + encodeURIComponent(finalText),
-          version: "1.0",
-        },
-      });
-      createdFiles.push(d.title);
+    if (!taskDone) {
+      createdLogs.push(`⚠️ Reached max turns (${MAX_TURNS}).`);
     }
 
-    // Log usage
+    // ── Export deliverables to project ──
+    const createdFiles: string[] = [];
+    for (const filePath of outputFiles) {
+      try {
+        const content = await sandbox.files.read(filePath, { format: "text" });
+        const name = filePath.split("/").pop() || "output";
+
+        await prisma.deliverable.create({
+          data: {
+            projectId,
+            title: name,
+            description: "Generated by AI Agent in E2B sandbox",
+            fileUrl: "data:text/plain;charset=utf-8," + encodeURIComponent(content),
+            version: "1.0",
+          },
+        });
+        createdFiles.push(name);
+        createdLogs.push(`📦 Saved deliverable: ${name}`);
+      } catch (e) {
+        createdLogs.push(`⚠️ Could not export ${filePath}`);
+      }
+    }
+
+    // ── Log usage ──
     await prisma.tokenUsage.create({
       data: {
         projectId,
@@ -376,17 +347,33 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    // ── Kill sandbox ──
+    await sandbox.kill();
+    sandbox = null;
+
     return NextResponse.json({
-      text: finalText || "文件已生成，刷新页面查看。",
+      text: finalSummary || (createdFiles.length > 0
+        ? `Task completed. ${createdFiles.length} file(s) created.`
+        : "Agent finished. Check logs for details."),
+      logs: createdLogs,
       tokensUsed: totalTokens,
-      mode: "real",
+      mode: "e2b-sandbox",
       filesCreated: createdFiles.length,
       files: createdFiles,
     });
-  } catch (e: any) {
+  } catch (error: any) {
+    console.error("Agent error:", error);
     return NextResponse.json({
-      text: `Agent 错误: ${e.message}`,
-      tokensUsed: 0, mode: "error", filesCreated: 0,
+      text: `Agent error: ${error.message}`,
+      logs: [`❌ ${error.message}`],
+      tokensUsed: 0,
+      mode: "error",
+      filesCreated: 0,
     });
+  } finally {
+    // Safety: always kill sandbox
+    if (sandbox) {
+      try { await sandbox.kill(); } catch {}
+    }
   }
 }
