@@ -25,7 +25,7 @@ export default function RegisterPage() {
 
     if (form.password !== form.confirmPassword) {
       setError(
-        locale === "zh" ? "两次密码不一致" : "Passwords do not match"
+        locale === "zh" ? "Passwords do not match" : "Passwords do not match"
       );
       return;
     }
@@ -33,7 +33,7 @@ export default function RegisterPage() {
     if (form.password.length < 8) {
       setError(
         locale === "zh"
-          ? "密码至少需要8个字符"
+          ? "Password must be at least 8 characters"
           : "Password must be at least 8 characters"
       );
       return;
@@ -57,7 +57,7 @@ export default function RegisterPage() {
       if (!res.ok) {
         setError(
           data.error ||
-            (locale === "zh" ? "注册失败" : "Registration failed")
+            (locale === "zh" ? "婵炲鍔岄崬鑺ュ緞鏉堫偉袝" : "Registration failed")
         );
         setLoading(false);
         return;
@@ -76,12 +76,12 @@ export default function RegisterPage() {
         router.push(`/${locale}/dashboard`);
         router.refresh();
       } else {
-        // Registration succeeded but auto-login failed — redirect to login
+        // Registration succeeded but auto-login failed; redirect to login
         router.push(`/${locale}/auth/login`);
       }
-    } catch (err) {
+    } catch {
       setLoading(false);
-      setError(locale === "zh" ? "网络错误，请重试" : "Network error, please retry");
+      setError(locale === "zh" ? "缂傚啯鍨圭划鍫曟煥濞嗘帩鍤栭柨娑樼焷椤曨剟鏌屽鍫㈡Ц" : "Network error, please retry");
     }
   };
 
@@ -141,7 +141,7 @@ export default function RegisterPage() {
               onChange={(e) => handleChange("password", e.target.value)}
               required
               className="w-full"
-              placeholder="••••••••"
+              placeholder="password"
               minLength={8}
             />
           </div>
@@ -155,7 +155,7 @@ export default function RegisterPage() {
               onChange={(e) => handleChange("confirmPassword", e.target.value)}
               required
               className="w-full"
-              placeholder="••••••••"
+              placeholder="password"
               minLength={8}
             />
           </div>
@@ -181,3 +181,4 @@ export default function RegisterPage() {
     </div>
   );
 }
+

@@ -12,7 +12,7 @@ export default function NewProjectPage() {
   const t = useTranslations("project");
   const locale = useLocale();
   const router = useRouter();
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
 
   const [categories, setCategories] = useState<Category[]>([]);
   const [form, setForm] = useState({
@@ -34,8 +34,8 @@ export default function NewProjectPage() {
       .then((r) => r.json())
       .then((data: Category[]) => {
         setCategories(data);
-        if (data.length > 0 && !form.categoryId) {
-          setForm((f) => ({ ...f, categoryId: data[0].id }));
+        if (data.length > 0) {
+          setForm((f) => (f.categoryId ? f : { ...f, categoryId: data[0].id }));
         }
       })
       .catch(() => {});
@@ -43,10 +43,10 @@ export default function NewProjectPage() {
 
   // Redirect if not logged in
   useEffect(() => {
-    if (session === null) {
-      router.push(`/${locale}/auth/login`);
+    if (status === "unauthenticated") {
+      router.replace(`/${locale}/auth/login?callbackUrl=/${locale}/projects/new`);
     }
-  }, [session, locale, router]);
+  }, [status, locale, router]);
 
   const selectedProvider = LLM_PROVIDERS[form.llmProvider];
 
@@ -72,8 +72,8 @@ export default function NewProjectPage() {
       }
 
       router.push(`/${locale}/projects/${data.id}`);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create project");
     } finally {
       setLoading(false);
     }
@@ -82,6 +82,14 @@ export default function NewProjectPage() {
   const update = (field: string, value: string) => {
     setForm((prev) => ({ ...prev, [field]: value }));
   };
+
+  if (status === "loading" || status === "unauthenticated" || !session) {
+    return (
+      <div className="max-w-3xl mx-auto px-4 py-8 text-text-dim">
+        {locale === "zh" ? "正在跳转到登录页..." : "Redirecting to login..."}
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">

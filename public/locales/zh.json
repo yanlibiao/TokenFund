@@ -1,8 +1,8 @@
 {
   "site": {
     "title": "TokenFund",
-    "tagline": "众筹Token，共建开源。",
-    "description": "一个极客平台，众筹大模型 Token。发布你的项目，获取 Token 贡献，一起构建开源软件。"
+    "tagline": "众筹 Token，共建开源。",
+    "description": "一个面向开发者的 LLM Token 众筹平台。发布项目，获得 Token 支持，共同构建开源软件。"
   },
   "nav": {
     "home": "首页",
@@ -30,9 +30,9 @@
     "step1Title": "发布项目",
     "step1Desc": "描述你的想法，设定 Token 目标，选择合适的 LLM 模型。",
     "step2Title": "获得资助",
-    "step2Desc": "社区成员用他们的 LLM API Token 来支持感兴趣的项目。",
+    "step2Desc": "社区成员用自己的 LLM Token 支持感兴趣的项目。",
     "step3Title": "开源构建",
-    "step3Desc": "利用众筹的 Token 进行开发。所有产出物开源、免费下载。"
+    "step3Desc": "利用众筹 Token 完成开发，产出物开放下载。"
   },
   "projects": {
     "title": "项目列表",
@@ -127,7 +127,7 @@
     "joined": "加入于"
   },
   "footer": {
-    "builtWith": "⌨️ 由极客为极客打造。",
+    "builtWith": "由极客为极客打造。",
     "openSource": "平台所有代码开源。",
     "terms": "条款",
     "privacy": "隐私"

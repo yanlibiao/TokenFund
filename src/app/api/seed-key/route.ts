@@ -1,55 +1,51 @@
-// Temporary route to seed an API key into the database
-// DELETE THIS FILE after testing
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { encrypt, maskKey } from "@/lib/encryption";
+import { auth } from "@/lib/auth";
 
+// Development-only helper for seeding a platform API key.
 export async function POST(request: NextRequest) {
   try {
+    if (process.env.NODE_ENV === "production") {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+
+    const session = await auth();
+    const adminEmails = (process.env.ADMIN_EMAILS || "")
+      .split(",")
+      .map((email) => email.trim().toLowerCase())
+      .filter(Boolean);
+    const userEmail = session?.user?.email?.toLowerCase();
+
+    if (!userEmail || !adminEmails.includes(userEmail)) {
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    }
+
     const body = await request.json();
-    const { key } = body;
+    const { key, provider } = body;
 
-    if (!key) {
-      return NextResponse.json({ error: "Missing key" }, { status: 400 });
-    }
+    if (!key) return NextResponse.json({ error: "Missing key" }, { status: 400 });
 
-    // Ensure demo user exists
-    let user = await prisma.user.findUnique({ where: { id: "demo" } });
+    const p = provider || "openai";
+
+    // Ensure platform user exists
+    let user = await prisma.user.findUnique({ where: { id: "platform" } });
     if (!user) {
-      user = await prisma.user.create({
-        data: { id: "demo", email: "demo@tokenfund.dev", username: "demo" },
-      });
+      user = await prisma.user.create({ data: { id: "platform", email: "platform@tokenfund.dev", username: "platform" } });
     }
 
-    // Delete old keys
-    await prisma.apiKey.deleteMany({ where: { userId: "demo" } });
-
-    // Add new key
     const encrypted = encrypt(key);
     const masked = maskKey(key);
+    const id = `key-${p}-${Date.now()}`;
 
     const apiKey = await prisma.apiKey.create({
-      data: {
-        id: "key-ds-prod-001",
-        userId: "demo",
-        provider: "deepseek",
-        label: "DeepSeek (Platform)",
-        encryptedKey: encrypted,
-        maskedKey: masked,
-        isActive: true,
-      },
-      select: {
-        id: true,
-        provider: true,
-        label: true,
-        maskedKey: true,
-        isActive: true,
-      },
+      data: { id, userId: "platform", provider: p, label: `${p.toUpperCase()} Key`, encryptedKey: encrypted, maskedKey: masked, isActive: true },
+      select: { id: true, provider: true, label: true, maskedKey: true, isActive: true },
     });
 
     return NextResponse.json({ ok: true, key: apiKey });
-  } catch (error: any) {
-    console.error("Seed key error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "Failed to seed key";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

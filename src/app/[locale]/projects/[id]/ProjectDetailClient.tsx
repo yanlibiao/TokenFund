@@ -30,11 +30,11 @@ export default function ProjectDetailClient({
   const [amount, setAmount] = useState("");
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  // Local state for deliverables — updated dynamically when Agent creates files
+  // Local state for deliverables, updated dynamically when Agent creates files.
   const [deliverables, setDeliverables] = useState(project.deliverables);
-  const [displayTokensUsed, setDisplayTokensUsed] = useState(totalTokensUsed);
+  const [, setDisplayTokensUsed] = useState(totalTokensUsed);
 
-  const handleFilesCreated = async (files: string[]) => {
+  const handleFilesCreated = async () => {
     // Re-fetch project data to get updated deliverables and token usage
     try {
       const res = await fetch(`/api/projects/${project.id}`);
@@ -89,7 +89,7 @@ export default function ProjectDetailClient({
             {project.title}
           </h1>
           <p className="text-text-dim text-sm mt-1">
-            {t("created by")}{" "}
+            by{" "}
             <Link
               href={`/${locale}/profile/${project.creator.username}`}
               className="text-text-secondary hover:text-accent"
@@ -136,15 +136,15 @@ export default function ProjectDetailClient({
         {(totalTokensUsed > 0 || project.usages?.length > 0) && (
           <div className="mt-3 pt-3 border-t border-border-color grid grid-cols-3 gap-3 text-xs">
             <div>
-              <span className="text-text-dim">已消耗</span>
+              <span className="text-text-dim">Used</span>
               <p className="text-text-warning font-semibold">{formatTokenCount(totalTokensUsed)}</p>
             </div>
             <div>
-              <span className="text-text-dim">剩余可用</span>
+              <span className="text-text-dim">Remaining</span>
               <p className="text-accent font-semibold">{formatTokenCount(Math.max(0, remainingTokens))}</p>
             </div>
             <div>
-              <span className="text-text-dim">调用次数</span>
+              <span className="text-text-dim">Runs</span>
               <p className="text-text-primary font-semibold">{project.usages?.length || 0}</p>
             </div>
           </div>
@@ -172,11 +172,11 @@ export default function ProjectDetailClient({
             </div>
           </div>
 
-          {/* Agent Sandbox — always visible */}
+          {/* Agent Sandbox */}
           <div>
             <h2 className="text-sm font-semibold text-text-primary mb-4">
               <span className="text-text-dim">## </span>
-              {locale === "zh" ? "AI Agent 沙盒" : "AI Agent Sandbox"}
+              AI Agent Sandbox
             </h2>
             <AgentSandbox
               projectId={project.id}
@@ -207,7 +207,7 @@ export default function ProjectDetailClient({
                     <div>
                       <p className="text-text-primary text-sm">{d.title}</p>
                       <p className="text-text-dim text-xs">
-                        v{d.version} · {d.downloadCount} {t("downloads")}
+                        v{d.version} 閻?{d.downloadCount} {t("downloads")}
                       </p>
                     </div>
                     <a
@@ -273,16 +273,6 @@ export default function ProjectDetailClient({
               <p className="text-text-dim text-sm">No comments yet.</p>
             )}
 
-            {/* Add comment form */}
-            <div className="mt-4 pt-4 border-t border-border-color">
-              <textarea
-                className="w-full text-sm min-h-[80px]"
-                placeholder={t("addComment") + "..."}
-              />
-              <button className="btn btn-secondary text-xs mt-2">
-                {t("addComment")}
-              </button>
-            </div>
           </div>
         </div>
 
@@ -339,7 +329,7 @@ export default function ProjectDetailClient({
                       rel="noopener noreferrer"
                       className="text-accent text-xs hover:underline"
                     >
-                      GitHub ↗
+                      GitHub
                     </a>
                   </dd>
                 </div>

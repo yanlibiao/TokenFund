@@ -1,15 +1,10 @@
 // Token estimation utilities
 // Approximate token counts for different providers and models
 
-interface TokenEstimate {
-  inputTokens: number;
-  outputTokens: number;
-}
-
 export function estimateTokens(text: string): number {
   // Rough estimate: ~4 chars per token for English, ~2 chars for Chinese
   const englishChars = (text.match(/[a-zA-Z0-9\s]/g) || []).length;
-  const chineseChars = (text.match(/[一-鿿]/g) || []).length;
+  const chineseChars = (text.match(/[\u4e00-\u9fff]/g) || []).length;
   const otherChars = text.length - englishChars - chineseChars;
 
   return Math.ceil(englishChars / 4 + chineseChars / 2 + otherChars / 3);
@@ -49,7 +44,7 @@ export const LLM_PROVIDERS = {
     color: "#4d6bfe",
   },
   qwen: {
-    name: "Qwen (通义千问)",
+    name: "Qwen",
     models: ["qwen-max", "qwen-plus", "qwen-turbo"],
     defaultModel: "qwen-plus",
     color: "#615ced",
@@ -57,3 +52,4 @@ export const LLM_PROVIDERS = {
 } as const;
 
 export type LLMProvider = keyof typeof LLM_PROVIDERS;
+

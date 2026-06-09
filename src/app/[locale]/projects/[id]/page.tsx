@@ -1,4 +1,3 @@
-import { getTranslations } from "next-intl/server";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import ProjectDetailClient from "./ProjectDetailClient";
@@ -9,7 +8,6 @@ export default async function ProjectDetailPage({
   params: Promise<{ locale: string; id: string }>;
 }) {
   const { locale, id } = await params;
-  const t = await getTranslations({ locale, namespace: "project" });
 
   const [project, usageTotal] = await Promise.all([
     prisma.project.findUnique({
